@@ -20,8 +20,9 @@ Those workflows are much more direct in AppKit than in a webview shell. Tauri co
 3. Quick Eye captures the display under your cursor.
 4. Drag to draw an arrow.
 5. Type a note in the popup and press `Add`.
-6. Press `Done`.
-7. The annotated screenshot is copied to your clipboard, ready to paste into ChatGPT, Codex, Slack, or anywhere else.
+6. Use the HUD to switch tools, open the stroke-color dropdown, crop manually, or undo and redo changes.
+7. Press `Done` to copy the result.
+8. The annotated screenshot is copied to your clipboard, ready to paste into ChatGPT, Codex, Slack, or anywhere else.
 
 ## Current implementation
 
@@ -29,8 +30,10 @@ Those workflows are much more direct in AppKit than in a webview shell. Tauri co
 - Global hotkey registration through Carbon.
 - Display capture via Core Graphics.
 - Fullscreen overlay annotation surface.
-- Fullscreen overlay annotation surface.
-- Arrow drawing with inline text prompts.
+- Arrow, box, circle, and freeform annotations with inline text prompts.
+- A visual dropdown color picker for annotation stroke styling.
+- Crop mode for exporting only the relevant area.
+- Undo and redo for annotation and crop changes.
 - Clipboard export on completion.
 
 ## Running
