@@ -80,7 +80,7 @@ That last point matters. Often you do not need to send a full screen to an LLM. 
 ## Typical Workflow
 
 1. Launch the app.
-2. Press `Control + Option + Command + 4`.
+2. Press `Shift + Command + 6`.
 3. Capture the current screen.
 4. Annotate the problem or desired change.
 5. Add text that explains the request.

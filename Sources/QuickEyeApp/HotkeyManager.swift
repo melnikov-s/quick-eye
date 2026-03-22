@@ -12,8 +12,8 @@ final class HotkeyManager {
 
     func registerDefaultHotKey(action: @escaping () -> Void) {
         let defaultShortcut = HotKeyShortcut(
-            keyCode: UInt32(kVK_ANSI_4),
-            modifiers: UInt32(controlKey) | UInt32(optionKey) | UInt32(cmdKey)
+            keyCode: UInt32(kVK_ANSI_6),
+            modifiers: UInt32(shiftKey) | UInt32(cmdKey)
         )
 
         register(shortcut: defaultShortcut, action: action)

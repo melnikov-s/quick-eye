@@ -3,6 +3,7 @@ import AppKit
 final class CaptureHUDView: NSView {
     private let onDone: () -> Void
     private let onDoneAutoCrop: () -> Void
+    private let onDoneManualCrop: () -> Void
     private let onDiscard: () -> Void
     private let onUndo: () -> Void
     private let onRedo: () -> Void
@@ -46,11 +47,6 @@ final class CaptureHUDView: NSView {
         accessibilityLabel: "Freeform tool: draw around an area, then add a note",
         action: #selector(selectFreeformTool)
     )
-    private lazy var cropToolButton = makeToolButton(
-        symbolName: "crop",
-        accessibilityLabel: "Crop tool: manually choose the exported area",
-        action: #selector(selectCropTool)
-    )
 
     private lazy var strokeColorButton = makeMenuButton(
         symbolName: "paintpalette",
@@ -59,7 +55,7 @@ final class CaptureHUDView: NSView {
 
     private lazy var undoButton = makeToolButton(
         symbolName: "arrow.uturn.backward",
-        accessibilityLabel: "Undo the last annotation or crop change",
+        accessibilityLabel: "Undo the last annotation change",
         action: #selector(undo)
     )
     private lazy var redoButton = makeToolButton(
@@ -82,12 +78,19 @@ final class CaptureHUDView: NSView {
         accessibilityLabel: "Auto-crop around annotations, then copy (Shift+Enter)",
         action: #selector(doneAutoCrop)
     )
+    private lazy var doneManualCropButton = makeToolButton(
+        symbolName: "crop",
+        accessibilityLabel: "Manually crop an area, then copy",
+        action: #selector(doneManualCrop)
+    )
 
     private var selectedTool: ToolMode = .arrow
+    private var statusTextOverride: String?
 
     init(
         onDone: @escaping () -> Void,
         onDoneAutoCrop: @escaping () -> Void,
+        onDoneManualCrop: @escaping () -> Void,
         onDiscard: @escaping () -> Void,
         onUndo: @escaping () -> Void,
         onRedo: @escaping () -> Void,
@@ -96,6 +99,7 @@ final class CaptureHUDView: NSView {
     ) {
         self.onDone = onDone
         self.onDoneAutoCrop = onDoneAutoCrop
+        self.onDoneManualCrop = onDoneManualCrop
         self.onDiscard = onDiscard
         self.onUndo = onUndo
         self.onRedo = onRedo
@@ -116,11 +120,11 @@ final class CaptureHUDView: NSView {
             rectangleToolButton,
             ellipseToolButton,
             freeformToolButton,
-            cropToolButton,
             strokeColorButton,
             undoButton,
             redoButton,
             clearButton,
+            doneManualCropButton,
             doneAutoCropButton,
             doneButton,
         ].forEach(addSubview)
@@ -150,27 +154,26 @@ final class CaptureHUDView: NSView {
         rectangleToolButton.frame = CGRect(x: 58, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
         ellipseToolButton.frame = CGRect(x: 98, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
         freeformToolButton.frame = CGRect(x: 138, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
-        cropToolButton.frame = CGRect(x: 178, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
 
-        strokeColorButton.frame = CGRect(x: 236, y: toolY, width: 48, height: 34)
+        strokeColorButton.frame = CGRect(x: 186, y: toolY, width: 48, height: 34)
 
-        undoButton.frame = CGRect(x: bounds.width - 250, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        redoButton.frame = CGRect(x: bounds.width - 210, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        clearButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        undoButton.frame = CGRect(x: bounds.width - 290, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        redoButton.frame = CGRect(x: bounds.width - 250, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        clearButton.frame = CGRect(x: bounds.width - 170, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        doneManualCropButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         doneAutoCropButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         doneButton.frame = CGRect(x: bounds.width - 50, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
     }
 
     func setTool(_ tool: ToolMode) {
         selectedTool = tool
-        titleLabel.stringValue = tool.description
+        refreshTitle()
 
         let buttonsByTool: [(ToolMode, NSButton)] = [
             (.arrow, arrowToolButton),
             (.rectangle, rectangleToolButton),
             (.ellipse, ellipseToolButton),
             (.freeform, freeformToolButton),
-            (.crop, cropToolButton),
         ]
 
         for (mode, button) in buttonsByTool {
@@ -186,6 +189,11 @@ final class CaptureHUDView: NSView {
         redoButton.alphaValue = canRedo ? 1 : 0.45
     }
 
+    func setStatusMessage(_ message: String?) {
+        statusTextOverride = message
+        refreshTitle()
+    }
+
     @objc
     private func done() {
         onDone()
@@ -194,6 +202,11 @@ final class CaptureHUDView: NSView {
     @objc
     private func doneAutoCrop() {
         onDoneAutoCrop()
+    }
+
+    @objc
+    private func doneManualCrop() {
+        onDoneManualCrop()
     }
 
     @objc
@@ -235,12 +248,6 @@ final class CaptureHUDView: NSView {
         onToolChange(.freeform)
     }
 
-    @objc
-    private func selectCropTool() {
-        setTool(.crop)
-        onToolChange(.crop)
-    }
-
     private func configureMenus() {
         strokeColorButton.menu = makeColorMenu(options: strokeColorOptions, selector: #selector(selectStrokeColor(_:)))
         strokeColorButton.selectItem(at: 0)
@@ -273,6 +280,10 @@ final class CaptureHUDView: NSView {
     private func selectColorOption(_ option: ColorOption, tag: Int, on button: NSPopUpButton) {
         button.selectItem(at: tag)
         button.toolTip = "\(option.name) stroke color"
+    }
+
+    private func refreshTitle() {
+        titleLabel.stringValue = statusTextOverride ?? selectedTool.description
     }
 
     private func makeToolButton(symbolName: String, accessibilityLabel: String, action: Selector) -> NSButton {

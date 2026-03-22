@@ -13,20 +13,17 @@ enum ToolMode: CaseIterable {
     case rectangle
     case ellipse
     case freeform
-    case crop
 
     var description: String {
         switch self {
         case .arrow:
-            return "Arrow mode: drag to point, then type your note."
+            return "Arrow mode: click the target, drag outward, then type your note."
         case .rectangle:
             return "Box mode: drag to frame an area, then add a note."
         case .ellipse:
             return "Circle mode: drag to surround a region, then add a note."
         case .freeform:
             return "Freeform mode: draw around the area, then add a note."
-        case .crop:
-            return "Crop mode: drag a frame around the area you want to keep."
         }
     }
 }
@@ -74,7 +71,6 @@ enum AnnotationKind {
 
 struct AnnotationSnapshot {
     var annotations: [CanvasAnnotation]
-    var cropRect: CGRect?
 }
 
 struct AnnotationSessionState {

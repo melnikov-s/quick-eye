@@ -7,6 +7,19 @@ final class AnnotationCanvasView: NSView {
     private static let annotationOutlineInnerColor = NSColor.white.withAlphaComponent(0.98)
     private static let textBubbleBackgroundColor = NSColor.black.withAlphaComponent(0.84)
     private static let textBubbleBorderColor = NSColor.white.withAlphaComponent(0.18)
+    private static let textBubbleHorizontalPadding: CGFloat = 12
+    private static let textBubbleVerticalPadding: CGFloat = 8
+    private static let textBubbleOffset: CGFloat = 12
+    private static let textBubbleSafeInset: CGFloat = 16
+    private static let textBubblePreferredMaxWidth: CGFloat = 360
+    private static let textBubbleExpandedMaxWidth: CGFloat = 460
+    private static let textBubbleFontSizes: [CGFloat] = [18, 16, 14, 13]
+
+    private struct TextBubbleLayout {
+        let bubbleRect: CGRect
+        let textRect: CGRect
+        let attributedText: NSAttributedString
+    }
 
     private let screenshot: NSImage
     private let onComplete: (NSImage, AnnotationHistoryPayload?) -> Void
@@ -19,7 +32,7 @@ final class AnnotationCanvasView: NSView {
     private var freeformPoints: [CGPoint] = []
     private var toolMode: ToolMode = .arrow
     private var annotationStyle: AnnotationStyle = .default
-    private var cropRect: CGRect?
+    private var isAwaitingManualCrop = false
     private var selectedAnnotationID: UUID?
     private var movingAnnotationID: UUID?
     private var moveStartPoint: CGPoint?
@@ -36,6 +49,9 @@ final class AnnotationCanvasView: NSView {
             },
             onDoneAutoCrop: { [weak self] in
                 self?.finishCapture(autoCrop: true)
+            },
+            onDoneManualCrop: { [weak self] in
+                self?.beginManualCropExport()
             },
             onDiscard: { [weak self] in
                 self?.discardCapture()
@@ -74,7 +90,6 @@ final class AnnotationCanvasView: NSView {
 
         if let initialState {
             annotations = initialState.snapshot.annotations
-            cropRect = initialState.snapshot.cropRect
             undoStack = initialState.undoStack
             redoStack = initialState.redoStack
             toolMode = initialState.toolMode
@@ -130,6 +145,15 @@ final class AnnotationCanvasView: NSView {
 
         let point = convert(event.locationInWindow, from: nil)
 
+        if isAwaitingManualCrop {
+            selectedAnnotationID = nil
+            resetDragState()
+            dragStartPoint = point
+            dragCurrentPoint = point
+            needsDisplay = true
+            return
+        }
+
         if let hitAnnotation = annotation(at: point) {
             selectedAnnotationID = hitAnnotation.id
             if event.clickCount >= 2 {
@@ -166,6 +190,13 @@ final class AnnotationCanvasView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
 
+        if isAwaitingManualCrop {
+            guard dragStartPoint != nil else { return }
+            dragCurrentPoint = point
+            needsDisplay = true
+            return
+        }
+
         if let movingAnnotationID, let moveStartPoint, let moveOriginalAnnotation {
             let delta = point - moveStartPoint
             if !hasRecordedMoveSnapshot, abs(delta.width) + abs(delta.height) > 2 {
@@ -193,6 +224,12 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if isAwaitingManualCrop {
+            let endPoint = convert(event.locationInWindow, from: nil)
+            finishManualCropIfPossible(endingAt: endPoint)
+            return
+        }
+
         if movingAnnotationID != nil {
             movingAnnotationID = nil
             moveStartPoint = nil
@@ -202,7 +239,7 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
-        guard let annotationOrCrop = makeResultFromCurrentDrag(
+        guard let annotation = makeAnnotationFromCurrentDrag(
             endingAt: convert(event.locationInWindow, from: nil)
         ) else {
             resetDragState()
@@ -212,26 +249,15 @@ final class AnnotationCanvasView: NSView {
 
         resetDragState()
 
-        switch annotationOrCrop {
-        case let .annotation(annotation):
-            pendingAnnotation = annotation
-            presentEditor(
-                for: annotation,
-                initialText: "",
-                submitButtonTitle: "Add",
-                onSubmit: { [weak self] text in
-                    self?.commitPendingAnnotation(text: text)
-                }
-            )
-        case let .crop(rect):
-            guard rect.width > 10, rect.height > 10 else {
-                needsDisplay = true
-                return
+        pendingAnnotation = annotation
+        presentEditor(
+            for: annotation,
+            initialText: "",
+            submitButtonTitle: "Add",
+            onSubmit: { [weak self] text in
+                self?.commitPendingAnnotation(text: text)
             }
-            registerSnapshot()
-            cropRect = rect
-            selectTool(.arrow)
-        }
+        )
 
         needsDisplay = true
     }
@@ -239,6 +265,15 @@ final class AnnotationCanvasView: NSView {
     override func keyDown(with event: NSEvent) {
         if activeEditor != nil {
             super.keyDown(with: event)
+            return
+        }
+
+        if isAwaitingManualCrop {
+            if event.keyCode == UInt16(kVK_Escape) {
+                cancelCapture()
+            } else {
+                super.keyDown(with: event)
+            }
             return
         }
 
@@ -275,7 +310,7 @@ final class AnnotationCanvasView: NSView {
         super.keyDown(with: event)
     }
 
-    private func makeResultFromCurrentDrag(endingAt endPoint: CGPoint) -> DragResult? {
+    private func makeAnnotationFromCurrentDrag(endingAt endPoint: CGPoint) -> CanvasAnnotation? {
         guard let start = dragStartPoint else { return nil }
 
         switch toolMode {
@@ -286,7 +321,7 @@ final class AnnotationCanvasView: NSView {
                 text: "",
                 style: annotationStyle
             )
-            return annotation.kind.isSubstantial ? .annotation(annotation) : nil
+            return annotation.kind.isSubstantial ? annotation : nil
         case .rectangle:
             let rect = rect(from: start, to: endPoint)
             let annotation = CanvasAnnotation(
@@ -295,7 +330,7 @@ final class AnnotationCanvasView: NSView {
                 text: "",
                 style: annotationStyle
             )
-            return annotation.kind.isSubstantial ? .annotation(annotation) : nil
+            return annotation.kind.isSubstantial ? annotation : nil
         case .ellipse:
             let rect = rect(from: start, to: endPoint)
             let annotation = CanvasAnnotation(
@@ -304,7 +339,7 @@ final class AnnotationCanvasView: NSView {
                 text: "",
                 style: annotationStyle
             )
-            return annotation.kind.isSubstantial ? .annotation(annotation) : nil
+            return annotation.kind.isSubstantial ? annotation : nil
         case .freeform:
             var points = freeformPoints
             if points.last != endPoint {
@@ -316,9 +351,7 @@ final class AnnotationCanvasView: NSView {
                 text: "",
                 style: annotationStyle
             )
-            return annotation.kind.isSubstantial ? .annotation(annotation) : nil
-        case .crop:
-            return .crop(rect(from: start, to: endPoint))
+            return annotation.kind.isSubstantial ? annotation : nil
         }
     }
 
@@ -386,6 +419,7 @@ final class AnnotationCanvasView: NSView {
 
     private func selectTool(_ mode: ToolMode) {
         toolMode = mode
+        isAwaitingManualCrop = false
         resetDragState()
         refreshHUDState()
         needsDisplay = true
@@ -393,8 +427,8 @@ final class AnnotationCanvasView: NSView {
 
     private func discardCapture() {
         annotations.removeAll()
-        cropRect = nil
         pendingAnnotation = nil
+        isAwaitingManualCrop = false
         selectedAnnotationID = nil
         undoStack.removeAll()
         redoStack.removeAll()
@@ -422,13 +456,13 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func currentSnapshot() -> AnnotationSnapshot {
-        AnnotationSnapshot(annotations: annotations, cropRect: cropRect)
+        AnnotationSnapshot(annotations: annotations)
     }
 
     private func apply(snapshot: AnnotationSnapshot) {
         annotations = snapshot.annotations
-        cropRect = snapshot.cropRect
         pendingAnnotation = nil
+        isAwaitingManualCrop = false
         selectedAnnotationID = nil
         removeEditor()
         refreshHUDState()
@@ -437,21 +471,27 @@ final class AnnotationCanvasView: NSView {
 
     private func refreshHUDState() {
         hudView.setTool(toolMode)
+        hudView.setStatusMessage(
+            isAwaitingManualCrop ? "Manual crop: drag a frame to crop, copy, and finish." : nil
+        )
         hudView.setUndoRedoState(canUndo: !undoStack.isEmpty, canRedo: !redoStack.isEmpty)
     }
 
     private func cancelCapture() {
         pendingAnnotation = nil
+        isAwaitingManualCrop = false
+        resetDragState()
         removeEditor()
         onCancel(historyPayloadForPersistence())
     }
 
     private func drawLivePreview() {
+        if let manualCropRect = currentManualCropRect {
+            drawCropOverlay(rect: manualCropRect, isDraft: true)
+            return
+        }
+
         switch toolMode {
-        case .crop:
-            if let currentCropRect = resolvedCropRect() {
-                drawCropOverlay(rect: currentCropRect, isDraft: dragStartPoint != nil)
-            }
         case .freeform:
             if freeformPoints.count > 1 {
                 drawFreeform(points: freeformPoints, style: annotationStyle, isDraft: true)
@@ -473,8 +513,6 @@ final class AnnotationCanvasView: NSView {
         case .ellipse:
             return CanvasAnnotation(id: UUID(), kind: .ellipse(rect(from: start, to: end)), text: "", style: annotationStyle)
         case .freeform:
-            return nil
-        case .crop:
             return nil
         }
     }
@@ -524,6 +562,10 @@ final class AnnotationCanvasView: NSView {
         style: AnnotationStyle,
         isDraft: Bool
     ) {
+        let shaftLength = start.distance(to: end)
+        let minimumLengthToRenderArrow: CGFloat = 6
+        guard shaftLength >= minimumLengthToRenderArrow else { return }
+
         let shaft = NSBezierPath()
         shaft.move(to: start)
         shaft.line(to: end)
@@ -532,20 +574,20 @@ final class AnnotationCanvasView: NSView {
 
         let arrowLength: CGFloat = 16
         let arrowAngle: CGFloat = .pi / 8
-        let angle = atan2(end.y - start.y, end.x - start.x)
+        let angle = atan2(start.y - end.y, start.x - end.x)
         let leftPoint = CGPoint(
-            x: end.x - arrowLength * cos(angle - arrowAngle),
-            y: end.y - arrowLength * sin(angle - arrowAngle)
+            x: start.x - arrowLength * cos(angle - arrowAngle),
+            y: start.y - arrowLength * sin(angle - arrowAngle)
         )
         let rightPoint = CGPoint(
-            x: end.x - arrowLength * cos(angle + arrowAngle),
-            y: end.y - arrowLength * sin(angle + arrowAngle)
+            x: start.x - arrowLength * cos(angle + arrowAngle),
+            y: start.y - arrowLength * sin(angle + arrowAngle)
         )
 
         let head = NSBezierPath()
-        head.move(to: end)
+        head.move(to: start)
         head.line(to: leftPoint)
-        head.move(to: end)
+        head.move(to: start)
         head.line(to: rightPoint)
         head.lineCapStyle = .round
         strokeAnnotationPath(head, color: style.strokeColor, lineWidth: 4)
@@ -588,12 +630,8 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func drawTextBubble(text: String, near point: CGPoint, style: AnnotationStyle) {
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
-            .foregroundColor: NSColor.white,
-        ]
-        let attributed = NSAttributedString(string: text, attributes: attributes)
-        let rect = textBubbleRect(text: text, near: point)
+        let layout = textBubbleLayout(text: text, near: point)
+        let rect = layout.bubbleRect
 
         let background = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
         Self.textBubbleBackgroundColor.setFill()
@@ -601,7 +639,10 @@ final class AnnotationCanvasView: NSView {
         Self.textBubbleBorderColor.setStroke()
         background.lineWidth = 1
         background.stroke()
-        attributed.draw(at: CGPoint(x: rect.minX + 12, y: rect.minY + 8))
+        layout.attributedText.draw(
+            with: layout.textRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
     }
 
     private func strokeAnnotationPath(_ path: NSBezierPath, color: NSColor, lineWidth: CGFloat) {
@@ -631,6 +672,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func finishCapture(autoCrop: Bool) {
+        isAwaitingManualCrop = false
         pendingAnnotation = nil
         removeEditor()
 
@@ -649,12 +691,37 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func resolvedExportCropRect(autoCrop: Bool) -> CGRect? {
-        if let cropRect {
-            return cropRect
-        }
-
         guard autoCrop else { return nil }
         return autoCropRect()
+    }
+
+    private func beginManualCropExport() {
+        guard activeEditor == nil else { return }
+
+        pendingAnnotation = nil
+        selectedAnnotationID = nil
+        isAwaitingManualCrop = true
+        resetDragState()
+        refreshHUDState()
+        needsDisplay = true
+    }
+
+    private func finishManualCropIfPossible(endingAt endPoint: CGPoint) {
+        dragCurrentPoint = endPoint
+        guard let cropRect = currentManualCropRect, cropRect.width > 10, cropRect.height > 10 else {
+            dragStartPoint = nil
+            dragCurrentPoint = nil
+            needsDisplay = true
+            return
+        }
+
+        isAwaitingManualCrop = false
+        let exportImage = rasterizedAnnotatedImage()
+        let finalizedImage = croppedImage(from: exportImage, cropRect: cropRect)
+        let historyPayload = historyPayloadForPersistence()
+        resetDragState()
+        refreshHUDState()
+        onComplete(downscaledImageIfNeeded(from: finalizedImage), historyPayload)
     }
 
     private func autoCropRect() -> CGRect? {
@@ -728,22 +795,23 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func drawBaseOverlay() {
-        if cropRect == nil && toolMode != .crop {
+        if let manualCropRect = currentManualCropRect {
+            let dimmedArea = NSBezierPath(rect: bounds)
+            dimmedArea.append(NSBezierPath(rect: manualCropRect))
+            dimmedArea.windingRule = .evenOdd
+            NSColor.black.withAlphaComponent(0.34).setFill()
+            dimmedArea.fill()
+            return
+        }
+
+        if !isAwaitingManualCrop {
             NSColor.black.withAlphaComponent(0.08).setFill()
             bounds.fill()
             return
         }
 
-        if let currentCropRect = resolvedCropRect() {
-            let dimmedArea = NSBezierPath(rect: bounds)
-            dimmedArea.append(NSBezierPath(rect: currentCropRect))
-            dimmedArea.windingRule = .evenOdd
-            NSColor.black.withAlphaComponent(0.34).setFill()
-            dimmedArea.fill()
-        } else {
-            NSColor.black.withAlphaComponent(0.18).setFill()
-            bounds.fill()
-        }
+        NSColor.black.withAlphaComponent(0.18).setFill()
+        bounds.fill()
     }
 
     private func drawCropOverlay(rect: CGRect, isDraft: Bool) {
@@ -755,12 +823,11 @@ final class AnnotationCanvasView: NSView {
         border.stroke()
     }
 
-    private func resolvedCropRect() -> CGRect? {
-        if toolMode == .crop, let start = dragStartPoint, let end = dragCurrentPoint {
-            return rect(from: start, to: end)
-        }
-
-        return cropRect
+    private var currentManualCropRect: CGRect? {
+        guard isAwaitingManualCrop,
+              let start = dragStartPoint,
+              let end = dragCurrentPoint else { return nil }
+        return rect(from: start, to: end)
     }
 
     private func clampedEditorOrigin(near point: CGPoint, size: CGSize) -> CGPoint {
@@ -795,10 +862,10 @@ final class AnnotationCanvasView: NSView {
     private func autoCropBounds(_ annotation: CanvasAnnotation) -> CGRect? {
         guard var bounds = annotationBounds(annotation) else { return nil }
 
-        if case let .arrow(start, end) = annotation.kind {
+        if case let .arrow(target, tail) = annotation.kind {
             bounds = bounds
-                .union(arrowTargetFocusRect(from: start, to: end))
-                .union(arrowSourceFocusRect(from: start, to: end))
+                .union(arrowTargetFocusRect(target: target, tail: tail))
+                .union(arrowSourceFocusRect(target: target, tail: tail))
         }
 
         return bounds
@@ -817,45 +884,150 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func textBubbleRect(text: String, near point: CGPoint) -> CGRect {
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
-        ]
-        let attributed = NSAttributedString(string: text, attributes: attributes)
-        let textSize = attributed.size()
-        let padding = CGSize(width: 12, height: 8)
-        var rect = CGRect(
-            x: point.x + 12,
-            y: point.y + 12,
-            width: textSize.width + padding.width * 2,
-            height: textSize.height + padding.height * 2
-        )
-
-        let safeBounds = bounds.insetBy(dx: 16, dy: 16)
-        if rect.maxX > safeBounds.maxX {
-            rect.origin.x = max(safeBounds.minX, point.x - rect.width - 12)
-        }
-        if rect.maxY > safeBounds.maxY {
-            rect.origin.y = max(safeBounds.minY, point.y - rect.height - 12)
-        }
-
-        return rect
+        textBubbleLayout(text: text, near: point).bubbleRect
     }
 
-    private func arrowTargetFocusRect(from start: CGPoint, to end: CGPoint) -> CGRect {
+    private func textBubbleLayout(text: String, near point: CGPoint) -> TextBubbleLayout {
+        let safeBounds = bounds.insetBy(dx: Self.textBubbleSafeInset, dy: Self.textBubbleSafeInset)
+        let absoluteMaxTextWidth = max(
+            160,
+            safeBounds.width - (Self.textBubbleHorizontalPadding * 2)
+        )
+        let candidateWidths = [
+            min(Self.textBubblePreferredMaxWidth, absoluteMaxTextWidth),
+            min(Self.textBubbleExpandedMaxWidth, absoluteMaxTextWidth),
+            absoluteMaxTextWidth,
+        ]
+        let maxTextHeight = max(
+            44,
+            safeBounds.height - (Self.textBubbleVerticalPadding * 2) - 24
+        )
+
+        var fallbackLayout: TextBubbleLayout?
+
+        for fontSize in Self.textBubbleFontSizes {
+            for textWidth in candidateWidths {
+                let layout = makeTextBubbleLayout(
+                    text: text,
+                    near: point,
+                    safeBounds: safeBounds,
+                    fontSize: fontSize,
+                    maxTextWidth: textWidth
+                )
+
+                fallbackLayout = layout
+                if layout.textRect.height <= maxTextHeight {
+                    return layout
+                }
+            }
+        }
+
+        return fallbackLayout ?? makeTextBubbleLayout(
+            text: text,
+            near: point,
+            safeBounds: safeBounds,
+            fontSize: Self.textBubbleFontSizes.last ?? 13,
+            maxTextWidth: absoluteMaxTextWidth
+        )
+    }
+
+    private func makeTextBubbleLayout(
+        text: String,
+        near point: CGPoint,
+        safeBounds: CGRect,
+        fontSize: CGFloat,
+        maxTextWidth: CGFloat
+    ) -> TextBubbleLayout {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraphStyle,
+        ]
+        let attributed = NSAttributedString(string: text, attributes: attributes)
+        let measuredTextBounds = attributed.boundingRect(
+            with: CGSize(width: maxTextWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        let textSize = CGSize(
+            width: ceil(min(maxTextWidth, max(measuredTextBounds.width, 1))),
+            height: ceil(max(measuredTextBounds.height, fontSize))
+        )
+        let bubbleSize = CGSize(
+            width: textSize.width + (Self.textBubbleHorizontalPadding * 2),
+            height: textSize.height + (Self.textBubbleVerticalPadding * 2)
+        )
+
+        let bubbleOrigin = positionedTextBubbleOrigin(
+            near: point,
+            bubbleSize: bubbleSize,
+            safeBounds: safeBounds
+        )
+        let bubbleRect = CGRect(origin: bubbleOrigin, size: bubbleSize)
+        let textRect = bubbleRect.insetBy(
+            dx: Self.textBubbleHorizontalPadding,
+            dy: Self.textBubbleVerticalPadding
+        )
+
+        return TextBubbleLayout(
+            bubbleRect: bubbleRect,
+            textRect: textRect,
+            attributedText: attributed
+        )
+    }
+
+    private func positionedTextBubbleOrigin(
+        near point: CGPoint,
+        bubbleSize: CGSize,
+        safeBounds: CGRect
+    ) -> CGPoint {
+        let preferredRightX = point.x + Self.textBubbleOffset
+        let preferredLeftX = point.x - bubbleSize.width - Self.textBubbleOffset
+        let x: CGFloat
+        if preferredRightX + bubbleSize.width <= safeBounds.maxX {
+            x = preferredRightX
+        } else if preferredLeftX >= safeBounds.minX {
+            x = preferredLeftX
+        } else {
+            x = min(
+                max(safeBounds.minX, preferredRightX),
+                safeBounds.maxX - bubbleSize.width
+            )
+        }
+
+        let preferredTopY = point.y + Self.textBubbleOffset
+        let preferredBottomY = point.y - bubbleSize.height - Self.textBubbleOffset
+        let y: CGFloat
+        if preferredTopY + bubbleSize.height <= safeBounds.maxY {
+            y = preferredTopY
+        } else if preferredBottomY >= safeBounds.minY {
+            y = preferredBottomY
+        } else {
+            y = min(
+                max(safeBounds.minY, preferredBottomY),
+                safeBounds.maxY - bubbleSize.height
+            )
+        }
+
+        return CGPoint(x: x, y: y)
+    }
+
+    private func arrowTargetFocusRect(target: CGPoint, tail: CGPoint) -> CGRect {
         let focusSize = CGSize(width: 180, height: 180)
         let halfSize = CGSize(width: focusSize.width / 2, height: focusSize.height / 2)
 
         var origin = CGPoint(
-            x: end.x - halfSize.width,
-            y: end.y - halfSize.height
+            x: target.x - halfSize.width,
+            y: target.y - halfSize.height
         )
 
-        let delta = end - start
+        let delta = target - tail
         let length = max(sqrt((delta.width * delta.width) + (delta.height * delta.height)), 1)
         let unit = CGSize(width: delta.width / length, height: delta.height / length)
 
-        // Bias the focus area slightly in the arrow direction so the target side
-        // gets more breathing room than the tail side.
+        // Bias the target region slightly toward the thing being pointed at.
         origin.x += unit.width * 28
         origin.y += unit.height * 28
 
@@ -863,21 +1035,21 @@ final class AnnotationCanvasView: NSView {
         return focusRect.intersection(bounds)
     }
 
-    private func arrowSourceFocusRect(from start: CGPoint, to end: CGPoint) -> CGRect {
+    private func arrowSourceFocusRect(target: CGPoint, tail: CGPoint) -> CGRect {
         let focusSize = CGSize(width: 110, height: 110)
         let halfSize = CGSize(width: focusSize.width / 2, height: focusSize.height / 2)
 
         var origin = CGPoint(
-            x: start.x - halfSize.width,
-            y: start.y - halfSize.height
+            x: tail.x - halfSize.width,
+            y: tail.y - halfSize.height
         )
 
-        let delta = end - start
+        let delta = target - tail
         let length = max(sqrt((delta.width * delta.width) + (delta.height * delta.height)), 1)
         let unit = CGSize(width: delta.width / length, height: delta.height / length)
 
-        // Bias the source region slightly opposite the arrow direction so we keep
-        // more context around where the gesture started.
+        // Bias the source region slightly away from the target so we keep context
+        // around where the annotation text/tail originated.
         origin.x -= unit.width * 16
         origin.y -= unit.height * 16
 
@@ -977,18 +1149,10 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func historyPayloadForPersistence() -> AnnotationHistoryPayload? {
-        guard !annotations.isEmpty || cropRect != nil else { return nil }
+        guard !annotations.isEmpty else { return nil }
 
         let state = currentSessionState()
-        let previewBase = rasterizedAnnotatedImage()
-        let previewImage: NSImage
-        if let cropRect {
-            previewImage = croppedImage(from: previewBase, cropRect: cropRect)
-        } else {
-            previewImage = previewBase
-        }
-
-        return AnnotationHistoryPayload(state: state, previewImage: previewImage)
+        return AnnotationHistoryPayload(state: state, previewImage: rasterizedAnnotatedImage())
     }
 
     private func currentSessionState() -> AnnotationHistoryState {
@@ -1000,9 +1164,4 @@ final class AnnotationCanvasView: NSView {
             annotationStyle: annotationStyle
         )
     }
-}
-
-private enum DragResult {
-    case annotation(CanvasAnnotation)
-    case crop(CGRect)
 }
