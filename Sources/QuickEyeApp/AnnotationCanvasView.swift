@@ -21,7 +21,10 @@ final class AnnotationCanvasView: NSView {
     private lazy var hudView: CaptureHUDView = {
         let view = CaptureHUDView(
             onDone: { [weak self] in
-                self?.finishCapture()
+                self?.finishCapture(autoCrop: false)
+            },
+            onDoneAutoCrop: { [weak self] in
+                self?.finishCapture(autoCrop: true)
             },
             onCancel: { [weak self] in
                 self?.cancelCapture()
@@ -172,6 +175,15 @@ final class AnnotationCanvasView: NSView {
                 redoLastChange()
             } else {
                 undoLastChange()
+            }
+            return
+        }
+
+        if isReturnKey(event.keyCode) {
+            if event.modifierFlags.contains(.shift) {
+                finishCapture(autoCrop: true)
+            } else {
+                finishCapture(autoCrop: false)
             }
             return
         }
@@ -492,16 +504,39 @@ final class AnnotationCanvasView: NSView {
         attributed.draw(at: CGPoint(x: rect.minX + 12, y: rect.minY + 8))
     }
 
-    private func finishCapture() {
+    private func finishCapture(autoCrop: Bool) {
         pendingAnnotation = nil
         removeEditor()
 
         let exportImage = rasterizedAnnotatedImage()
-        if let cropRect {
-            onComplete(croppedImage(from: exportImage, cropRect: cropRect))
+        if let exportCropRect = resolvedExportCropRect(autoCrop: autoCrop) {
+            onComplete(croppedImage(from: exportImage, cropRect: exportCropRect))
         } else {
             onComplete(exportImage)
         }
+    }
+
+    private func resolvedExportCropRect(autoCrop: Bool) -> CGRect? {
+        if let cropRect {
+            return cropRect
+        }
+
+        guard autoCrop else { return nil }
+        return autoCropRect()
+    }
+
+    private func autoCropRect() -> CGRect? {
+        let allBounds = annotations
+            .compactMap(annotationBounds(_:))
+            .reduce(into: CGRect.null) { partial, rect in
+                partial = partial.union(rect)
+            }
+
+        guard !allBounds.isNull else { return nil }
+
+        let padding: CGFloat = 28
+        let padded = allBounds.insetBy(dx: -padding, dy: -padding)
+        return padded.intersection(bounds)
     }
 
     private func rasterizedAnnotatedImage() -> NSImage {
@@ -586,6 +621,30 @@ final class AnnotationCanvasView: NSView {
         )
     }
 
+    private func annotationBounds(_ annotation: CanvasAnnotation) -> CGRect? {
+        let shapeBounds = shapeBounds(for: annotation.kind)
+        guard !shapeBounds.isNull else { return nil }
+
+        if annotation.text.isEmpty {
+            return shapeBounds
+        }
+
+        let bubbleBounds = textBubbleRect(text: annotation.text, near: annotation.textAnchor)
+        return shapeBounds.union(bubbleBounds)
+    }
+
+    private func shapeBounds(for kind: AnnotationKind) -> CGRect {
+        switch kind {
+        case let .arrow(start, end):
+            let lineRect = rect(from: start, to: end)
+            return lineRect.insetBy(dx: -22, dy: -22)
+        case let .rectangle(rect), let .ellipse(rect):
+            return rect.insetBy(dx: -6, dy: -6)
+        case let .freeform(points):
+            return points.boundingRect.insetBy(dx: -6, dy: -6)
+        }
+    }
+
     private func textBubbleRect(text: String, near point: CGPoint) -> CGRect {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
@@ -615,6 +674,10 @@ final class AnnotationCanvasView: NSView {
         dragStartPoint = nil
         dragCurrentPoint = nil
         freeformPoints.removeAll()
+    }
+
+    private func isReturnKey(_ keyCode: UInt16) -> Bool {
+        keyCode == UInt16(kVK_Return) || keyCode == 76
     }
 }
 

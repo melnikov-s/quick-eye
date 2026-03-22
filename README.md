@@ -21,7 +21,7 @@ Those workflows are much more direct in AppKit than in a webview shell. Tauri co
 4. Drag to draw an arrow.
 5. Type a note in the popup and press `Add`.
 6. Use the HUD to switch tools, open the stroke-color dropdown, crop manually, or undo and redo changes.
-7. Press `Done` to copy the result.
+7. Press `Done` to copy the full result, or the auto-crop finish button to copy a padded crop around your annotations.
 8. The annotated screenshot is copied to your clipboard, ready to paste into ChatGPT, Codex, Slack, or anywhere else.
 
 ## Current implementation
@@ -32,6 +32,7 @@ Those workflows are much more direct in AppKit than in a webview shell. Tauri co
 - Fullscreen overlay annotation surface.
 - Arrow, box, circle, and freeform annotations with inline text prompts.
 - A visual dropdown color picker for annotation stroke styling.
+- A separate auto-crop export action that trims to your annotated area with padding.
 - Crop mode for exporting only the relevant area.
 - Undo and redo for annotation and crop changes.
 - Clipboard export on completion.

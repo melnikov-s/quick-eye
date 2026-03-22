@@ -2,6 +2,7 @@ import AppKit
 
 final class CaptureHUDView: NSView {
     private let onDone: () -> Void
+    private let onDoneAutoCrop: () -> Void
     private let onCancel: () -> Void
     private let onClear: () -> Void
     private let onUndo: () -> Void
@@ -79,14 +80,20 @@ final class CaptureHUDView: NSView {
     )
     private lazy var doneButton = makeToolButton(
         symbolName: "checkmark",
-        accessibilityLabel: "Copy the full annotated screenshot",
+        accessibilityLabel: "Copy the full annotated screenshot (Enter)",
         action: #selector(done)
+    )
+    private lazy var doneAutoCropButton = makeToolButton(
+        symbolName: "checkmark.rectangle",
+        accessibilityLabel: "Auto-crop around annotations, then copy (Shift+Enter)",
+        action: #selector(doneAutoCrop)
     )
 
     private var selectedTool: ToolMode = .arrow
 
     init(
         onDone: @escaping () -> Void,
+        onDoneAutoCrop: @escaping () -> Void,
         onCancel: @escaping () -> Void,
         onClear: @escaping () -> Void,
         onUndo: @escaping () -> Void,
@@ -95,6 +102,7 @@ final class CaptureHUDView: NSView {
         onStrokeColorChange: @escaping (NSColor) -> Void
     ) {
         self.onDone = onDone
+        self.onDoneAutoCrop = onDoneAutoCrop
         self.onCancel = onCancel
         self.onClear = onClear
         self.onUndo = onUndo
@@ -122,6 +130,7 @@ final class CaptureHUDView: NSView {
             redoButton,
             clearButton,
             cancelButton,
+            doneAutoCropButton,
             doneButton,
         ].forEach(addSubview)
 
@@ -157,7 +166,8 @@ final class CaptureHUDView: NSView {
         undoButton.frame = CGRect(x: bounds.width - 250, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         redoButton.frame = CGRect(x: bounds.width - 210, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         clearButton.frame = CGRect(x: bounds.width - 170, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        cancelButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        cancelButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        doneAutoCropButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         doneButton.frame = CGRect(x: bounds.width - 50, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
     }
 
@@ -189,6 +199,11 @@ final class CaptureHUDView: NSView {
     @objc
     private func done() {
         onDone()
+    }
+
+    @objc
+    private func doneAutoCrop() {
+        onDoneAutoCrop()
     }
 
     @objc
