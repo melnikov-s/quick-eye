@@ -99,6 +99,43 @@ private final class AnnotationWindow: NSWindow {
     override var canBecomeMain: Bool {
         true
     }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifierFlags == .command || modifierFlags == [.command, .shift],
+              let characters = event.charactersIgnoringModifiers?.lowercased()
+        else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        let selector: Selector?
+        switch characters {
+        case "x":
+            selector = #selector(NSText.cut(_:))
+        case "c":
+            selector = #selector(NSText.copy(_:))
+        case "v":
+            selector = #selector(NSText.paste(_:))
+        case "a":
+            selector = #selector(NSText.selectAll(_:))
+        case "z" where modifierFlags == .command:
+            selector = #selector(UndoManager.undo)
+        case "z" where modifierFlags == [.command, .shift]:
+            selector = #selector(UndoManager.redo)
+        default:
+            selector = nil
+        }
+
+        guard let selector else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        if NSApp.sendAction(selector, to: nil, from: self) {
+            return true
+        }
+
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 private extension NSImage {
