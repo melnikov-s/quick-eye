@@ -326,7 +326,9 @@ final class AnnotationCanvasView: NSView {
         }
 
         if isReturnKey(event.keyCode) {
-            if event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift) {
+                beginManualCropExport()
+            } else if event.modifierFlags.contains(.command) {
                 convertCaptureToText()
             } else if event.modifierFlags.contains(.shift) {
                 finishCapture(autoCrop: true)
@@ -409,7 +411,7 @@ final class AnnotationCanvasView: NSView {
         let desiredSize = CGSize(width: 320, height: 110)
         let origin = clampedEditorOrigin(near: annotation.textAnchor, size: desiredSize)
         editor.frame = CGRect(origin: origin, size: desiredSize)
-        editor.onPreferredHeightChange = { [weak self, weak editor] newHeight in
+        editor.onPreferredHeightChange = { [weak self, weak editor] (newHeight: CGFloat) in
             guard let self, let editor else { return }
 
             let newSize = CGSize(width: editor.frame.width, height: newHeight)

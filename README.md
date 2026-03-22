@@ -76,6 +76,24 @@ That last point matters. Often you do not need to send a full screen to an LLM. 
 - History of the 10 most recent annotated captures
 - Session restore from history, including undo/redo state
 - Clipboard-first export so the result is ready to paste into an LLM immediately
+- Prompt generation mode that converts the annotated capture into text and copies the prompt
+- Provider settings for Gemini, OpenAI, and OpenRouter with editable base URLs and prompt templates
+
+## Hotkeys
+
+- `Shift + Command + 6` starts a new capture
+- `Enter` copies the normal annotated capture
+- `Shift + Enter` auto-crops around the annotations and copies the result
+- `Command + Enter` converts the normal annotated capture into text and copies the prompt
+- `Shift + Command + Enter` enters manual crop mode and finishes exactly like clicking the manual crop button
+- `Escape` closes the current capture
+- `Command + Z` undoes the last change
+- `Command + Shift + Z` redoes the last undone change
+- `Delete` removes the selected annotation
+- While editing a label:
+  `Enter` accepts the label
+  `Shift + Enter` inserts a newline
+  `Escape` cancels the label
 
 ## Typical Workflow
 
@@ -84,8 +102,23 @@ That last point matters. Often you do not need to send a full screen to an LLM. 
 3. Capture the current screen.
 4. Annotate the problem or desired change.
 5. Add text that explains the request.
-6. Press `Enter` to copy normally, or `Shift+Enter` to auto-crop and copy.
+6. Press `Enter` to copy normally, `Shift + Enter` to auto-crop and copy, `Shift + Command + Enter` for manual crop, or `Command + Enter` to convert the capture into a text-only prompt.
 7. Paste the result into ChatGPT, Codex, or another agent.
+
+## Prompt Conversion
+
+Quick Eye can also turn an annotated capture into a text-only prompt before you hand it to a more expensive model.
+
+The flow is:
+
+1. Open `Prompt Settings` from the menu bar.
+2. Choose a provider (`Gemini`, `OpenAI`, or `OpenRouter`).
+3. Configure the model, API key, base URL, and prompt template.
+4. Capture and annotate normally.
+5. Press `Command + Enter` to send the normal exported screenshot to the configured model.
+6. Quick Eye copies the returned prompt text to your clipboard.
+
+The base URL defaults to the provider's official endpoint, but it remains editable so you can point Quick Eye at a proxy or compatible gateway if needed.
 
 ## Why It Is Different From a General Screenshot Tool
 

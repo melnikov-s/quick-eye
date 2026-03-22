@@ -4,10 +4,8 @@ final class AnnotationInputView: NSView, NSTextViewDelegate {
     private enum Layout {
         static let horizontalPadding: CGFloat = 12
         static let topPadding: CGFloat = 12
-        static let bottomPadding: CGFloat = 10
-        static let buttonRowHeight: CGFloat = 24
-        static let buttonRowSpacing: CGFloat = 10
-        static let minHeight: CGFloat = 98
+        static let bottomPadding: CGFloat = 12
+        static let minHeight: CGFloat = 76
         static let maxHeight: CGFloat = 230
     }
 
@@ -50,18 +48,6 @@ final class AnnotationInputView: NSView, NSTextViewDelegate {
         return label
     }()
 
-    private lazy var addButton: NSButton = {
-        let button = NSButton(title: "Add", target: self, action: #selector(submit))
-        button.bezelStyle = .rounded
-        return button
-    }()
-
-    private lazy var cancelButton: NSButton = {
-        let button = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        button.bezelStyle = .rounded
-        return button
-    }()
-
     private var lastReportedHeight: CGFloat = Layout.minHeight
 
     init(
@@ -80,12 +66,9 @@ final class AnnotationInputView: NSView, NSTextViewDelegate {
         layer?.borderColor = NSColor.separatorColor.cgColor
 
         textView.string = initialText
-        addButton.title = submitButtonTitle
 
         addSubview(scrollView)
         addSubview(placeholderLabel)
-        addSubview(addButton)
-        addSubview(cancelButton)
         updatePlaceholderVisibility()
     }
 
@@ -97,16 +80,11 @@ final class AnnotationInputView: NSView, NSTextViewDelegate {
     override func layout() {
         super.layout()
 
-        let buttonY = Layout.bottomPadding
-        addButton.frame = CGRect(x: bounds.width - 82, y: buttonY, width: 70, height: Layout.buttonRowHeight)
-        cancelButton.frame = CGRect(x: bounds.width - 160, y: buttonY, width: 70, height: Layout.buttonRowHeight)
-
-        let textAreaHeight = bounds.height - Layout.topPadding - Layout.bottomPadding - Layout.buttonRowHeight - Layout.buttonRowSpacing
         scrollView.frame = CGRect(
             x: Layout.horizontalPadding,
-            y: buttonY + Layout.buttonRowHeight + Layout.buttonRowSpacing,
+            y: Layout.bottomPadding,
             width: bounds.width - (Layout.horizontalPadding * 2),
-            height: max(40, textAreaHeight)
+            height: max(40, bounds.height - Layout.topPadding - Layout.bottomPadding)
         )
 
         placeholderLabel.frame = CGRect(
@@ -126,6 +104,10 @@ final class AnnotationInputView: NSView, NSTextViewDelegate {
 
     func focus() {
         window?.makeFirstResponder(textView)
+    }
+
+    func accept() {
+        submit()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -180,8 +162,6 @@ final class AnnotationInputView: NSView, NSTextViewDelegate {
         let desiredHeight = measuredTextHeight
             + Layout.topPadding
             + Layout.bottomPadding
-            + Layout.buttonRowHeight
-            + Layout.buttonRowSpacing
 
         return min(max(Layout.minHeight, desiredHeight), Layout.maxHeight)
     }

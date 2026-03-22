@@ -81,7 +81,7 @@ final class CaptureHUDView: NSView {
     )
     private lazy var doneManualCropButton = makeToolButton(
         symbolName: "crop",
-        accessibilityLabel: "Manually crop an area, then copy",
+        accessibilityLabel: "Manually crop an area, then copy (Shift+Command+Enter)",
         action: #selector(doneManualCrop)
     )
     private lazy var doneConvertToTextButton = makeToolButton(
