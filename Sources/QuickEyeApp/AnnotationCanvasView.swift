@@ -32,11 +32,8 @@ final class AnnotationCanvasView: NSView {
             onDoneAutoCrop: { [weak self] in
                 self?.finishCapture(autoCrop: true)
             },
-            onCancel: { [weak self] in
-                self?.cancelCapture()
-            },
-            onClear: { [weak self] in
-                self?.clearCanvas()
+            onDiscard: { [weak self] in
+                self?.discardCapture()
             },
             onUndo: { [weak self] in
                 self?.undoLastChange()
@@ -303,15 +300,15 @@ final class AnnotationCanvasView: NSView {
         needsDisplay = true
     }
 
-    private func clearCanvas() {
-        guard !annotations.isEmpty || cropRect != nil else { return }
-        registerSnapshot()
+    private func discardCapture() {
         annotations.removeAll()
         cropRect = nil
         pendingAnnotation = nil
+        undoStack.removeAll()
+        redoStack.removeAll()
+        resetDragState()
         removeEditor()
-        refreshHUDState()
-        needsDisplay = true
+        onCancel(nil)
     }
 
     private func undoLastChange() {

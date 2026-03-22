@@ -3,8 +3,7 @@ import AppKit
 final class CaptureHUDView: NSView {
     private let onDone: () -> Void
     private let onDoneAutoCrop: () -> Void
-    private let onCancel: () -> Void
-    private let onClear: () -> Void
+    private let onDiscard: () -> Void
     private let onUndo: () -> Void
     private let onRedo: () -> Void
     private let onToolChange: (ToolMode) -> Void
@@ -70,13 +69,8 @@ final class CaptureHUDView: NSView {
     )
     private lazy var clearButton = makeToolButton(
         symbolName: "trash",
-        accessibilityLabel: "Clear all annotations and any manual crop",
-        action: #selector(clear)
-    )
-    private lazy var cancelButton = makeToolButton(
-        symbolName: "xmark",
-        accessibilityLabel: "Cancel this capture without copying anything (Esc)",
-        action: #selector(cancel)
+        accessibilityLabel: "Discard this capture and remove it from history if it was saved",
+        action: #selector(discardCapture)
     )
     private lazy var doneButton = makeToolButton(
         symbolName: "checkmark",
@@ -94,8 +88,7 @@ final class CaptureHUDView: NSView {
     init(
         onDone: @escaping () -> Void,
         onDoneAutoCrop: @escaping () -> Void,
-        onCancel: @escaping () -> Void,
-        onClear: @escaping () -> Void,
+        onDiscard: @escaping () -> Void,
         onUndo: @escaping () -> Void,
         onRedo: @escaping () -> Void,
         onToolChange: @escaping (ToolMode) -> Void,
@@ -103,8 +96,7 @@ final class CaptureHUDView: NSView {
     ) {
         self.onDone = onDone
         self.onDoneAutoCrop = onDoneAutoCrop
-        self.onCancel = onCancel
-        self.onClear = onClear
+        self.onDiscard = onDiscard
         self.onUndo = onUndo
         self.onRedo = onRedo
         self.onToolChange = onToolChange
@@ -129,7 +121,6 @@ final class CaptureHUDView: NSView {
             undoButton,
             redoButton,
             clearButton,
-            cancelButton,
             doneAutoCropButton,
             doneButton,
         ].forEach(addSubview)
@@ -165,8 +156,7 @@ final class CaptureHUDView: NSView {
 
         undoButton.frame = CGRect(x: bounds.width - 250, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         redoButton.frame = CGRect(x: bounds.width - 210, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        clearButton.frame = CGRect(x: bounds.width - 170, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        cancelButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        clearButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         doneAutoCropButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         doneButton.frame = CGRect(x: bounds.width - 50, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
     }
@@ -207,13 +197,8 @@ final class CaptureHUDView: NSView {
     }
 
     @objc
-    private func cancel() {
-        onCancel()
-    }
-
-    @objc
-    private func clear() {
-        onClear()
+    private func discardCapture() {
+        onDiscard()
     }
 
     @objc
