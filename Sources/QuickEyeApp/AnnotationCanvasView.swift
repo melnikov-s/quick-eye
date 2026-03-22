@@ -2,9 +2,15 @@ import AppKit
 import Carbon
 
 final class AnnotationCanvasView: NSView {
+    private static let maxExportLongEdge: CGFloat = 1800
+    private static let annotationOutlineOuterColor = NSColor.black.withAlphaComponent(0.9)
+    private static let annotationOutlineInnerColor = NSColor.white.withAlphaComponent(0.98)
+    private static let textBubbleBackgroundColor = NSColor.black.withAlphaComponent(0.84)
+    private static let textBubbleBorderColor = NSColor.white.withAlphaComponent(0.18)
+
     private let screenshot: NSImage
-    private let onComplete: (NSImage) -> Void
-    private let onCancel: () -> Void
+    private let onComplete: (NSImage, AnnotationHistoryPayload?) -> Void
+    private let onCancel: (AnnotationHistoryPayload?) -> Void
 
     private var annotations: [CanvasAnnotation] = []
     private var pendingAnnotation: CanvasAnnotation?
@@ -54,14 +60,20 @@ final class AnnotationCanvasView: NSView {
     init(
         frame: CGRect,
         screenshot: NSImage,
-        onComplete: @escaping (NSImage) -> Void,
-        onCancel: @escaping () -> Void
+        initialState: AnnotationHistoryState? = nil,
+        onComplete: @escaping (NSImage, AnnotationHistoryPayload?) -> Void,
+        onCancel: @escaping (AnnotationHistoryPayload?) -> Void
     ) {
         self.screenshot = screenshot
         self.onComplete = onComplete
         self.onCancel = onCancel
         super.init(frame: frame)
         wantsLayer = true
+
+        if let initialState {
+            annotations = initialState.annotations
+            cropRect = initialState.cropRect
+        }
     }
 
     @available(*, unavailable)
@@ -341,7 +353,7 @@ final class AnnotationCanvasView: NSView {
     private func cancelCapture() {
         pendingAnnotation = nil
         removeEditor()
-        onCancel()
+        onCancel(historyPayloadForPersistence())
     }
 
     private func drawLivePreview() {
@@ -421,11 +433,8 @@ final class AnnotationCanvasView: NSView {
         let shaft = NSBezierPath()
         shaft.move(to: start)
         shaft.line(to: end)
-        shaft.lineWidth = isDraft ? 5 : 4
         shaft.lineCapStyle = .round
-
-        style.strokeColor.setStroke()
-        shaft.stroke()
+        strokeAnnotationPath(shaft, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
 
         let arrowLength: CGFloat = 16
         let arrowAngle: CGFloat = .pi / 8
@@ -444,10 +453,8 @@ final class AnnotationCanvasView: NSView {
         head.line(to: leftPoint)
         head.move(to: end)
         head.line(to: rightPoint)
-        head.lineWidth = 4
         head.lineCapStyle = .round
-        style.strokeColor.setStroke()
-        head.stroke()
+        strokeAnnotationPath(head, color: style.strokeColor, lineWidth: 4)
 
         if !text.isEmpty {
             drawTextBubble(text: text, near: end, style: style)
@@ -462,13 +469,11 @@ final class AnnotationCanvasView: NSView {
         makePath: (CGRect) -> NSBezierPath
     ) {
         let path = makePath(rect)
-        path.lineWidth = isDraft ? 5 : 4
         let dash: [CGFloat] = isDraft ? [8, 5] : []
         if !dash.isEmpty {
             path.setLineDash(dash, count: dash.count, phase: 0)
         }
-        style.strokeColor.setStroke()
-        path.stroke()
+        strokeAnnotationPath(path, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
 
         if !text.isEmpty {
             drawTextBubble(text: text, near: CGPoint(x: rect.maxX, y: rect.maxY), style: style)
@@ -483,11 +488,9 @@ final class AnnotationCanvasView: NSView {
         for point in points.dropFirst() {
             path.line(to: point)
         }
-        path.lineWidth = isDraft ? 5 : 4
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        style.strokeColor.setStroke()
-        path.stroke()
+        strokeAnnotationPath(path, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
     }
 
     private func drawTextBubble(text: String, near point: CGPoint, style: AnnotationStyle) {
@@ -499,9 +502,26 @@ final class AnnotationCanvasView: NSView {
         let rect = textBubbleRect(text: text, near: point)
 
         let background = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
-        NSColor.black.withAlphaComponent(0.76).setFill()
+        Self.textBubbleBackgroundColor.setFill()
         background.fill()
+        Self.textBubbleBorderColor.setStroke()
+        background.lineWidth = 1
+        background.stroke()
         attributed.draw(at: CGPoint(x: rect.minX + 12, y: rect.minY + 8))
+    }
+
+    private func strokeAnnotationPath(_ path: NSBezierPath, color: NSColor, lineWidth: CGFloat) {
+        path.lineWidth = lineWidth + 4
+        Self.annotationOutlineOuterColor.setStroke()
+        path.stroke()
+
+        path.lineWidth = lineWidth + 2
+        Self.annotationOutlineInnerColor.setStroke()
+        path.stroke()
+
+        path.lineWidth = lineWidth
+        color.setStroke()
+        path.stroke()
     }
 
     private func finishCapture(autoCrop: Bool) {
@@ -509,11 +529,17 @@ final class AnnotationCanvasView: NSView {
         removeEditor()
 
         let exportImage = rasterizedAnnotatedImage()
+        let finalizedImage: NSImage
         if let exportCropRect = resolvedExportCropRect(autoCrop: autoCrop) {
-            onComplete(croppedImage(from: exportImage, cropRect: exportCropRect))
+            finalizedImage = croppedImage(from: exportImage, cropRect: exportCropRect)
         } else {
-            onComplete(exportImage)
+            finalizedImage = exportImage
         }
+
+        onComplete(
+            downscaledImageIfNeeded(from: finalizedImage),
+            historyPayloadForPersistence()
+        )
     }
 
     private func resolvedExportCropRect(autoCrop: Bool) -> CGRect? {
@@ -566,6 +592,33 @@ final class AnnotationCanvasView: NSView {
         )
         cropped.unlockFocus()
         return cropped
+    }
+
+    private func downscaledImageIfNeeded(from image: NSImage) -> NSImage {
+        let originalSize = image.size
+        let longEdge = max(originalSize.width, originalSize.height)
+
+        guard longEdge > Self.maxExportLongEdge, longEdge > 0 else {
+            return image
+        }
+
+        let scale = Self.maxExportLongEdge / longEdge
+        let targetSize = CGSize(
+            width: max(1, floor(originalSize.width * scale)),
+            height: max(1, floor(originalSize.height * scale))
+        )
+
+        let downscaled = NSImage(size: targetSize)
+        downscaled.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(
+            in: CGRect(origin: .zero, size: targetSize),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        downscaled.unlockFocus()
+        return downscaled
     }
 
     private func drawBaseOverlay() {
@@ -678,6 +731,21 @@ final class AnnotationCanvasView: NSView {
 
     private func isReturnKey(_ keyCode: UInt16) -> Bool {
         keyCode == UInt16(kVK_Return) || keyCode == 76
+    }
+
+    private func historyPayloadForPersistence() -> AnnotationHistoryPayload? {
+        guard !annotations.isEmpty || cropRect != nil else { return nil }
+
+        let state = AnnotationHistoryState(annotations: annotations, cropRect: cropRect)
+        let previewBase = rasterizedAnnotatedImage()
+        let previewImage: NSImage
+        if let cropRect {
+            previewImage = croppedImage(from: previewBase, cropRect: cropRect)
+        } else {
+            previewImage = previewBase
+        }
+
+        return AnnotationHistoryPayload(state: state, previewImage: previewImage)
     }
 }
 

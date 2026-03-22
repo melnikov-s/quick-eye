@@ -5,9 +5,11 @@ final class QuickEyeController {
     private let screenshotService = ScreenshotService()
     private let clipboardService = ClipboardService()
     private let hotkeyManager = HotkeyManager()
+    private let historyLimit = 10
 
     private var annotationWindowController: AnnotationWindowController?
     private var isCapturing = false
+    private var historyItems: [CaptureHistoryItem] = []
 
     func start() {
         hotkeyManager.registerDefaultHotKey { [weak self] in
@@ -47,17 +49,46 @@ final class QuickEyeController {
         NSApp.terminate(nil)
     }
 
-    private func presentAnnotationWindow(with capture: ScreenCapture) {
+    func captureHistory() -> [CaptureHistoryItem] {
+        historyItems
+    }
+
+    func reopenHistoryItem(id: UUID) {
+        guard let item = historyItems.first(where: { $0.id == id }) else { return }
+        presentAnnotationWindow(
+            with: item.capture,
+            initialState: item.state,
+            historyItemID: item.id
+        )
+    }
+
+    private func presentAnnotationWindow(
+        with capture: ScreenCapture,
+        initialState: AnnotationHistoryState? = nil,
+        historyItemID: UUID? = nil
+    ) {
         annotationWindowController?.close()
 
         let controller = AnnotationWindowController(
             capture: capture,
-            onComplete: { [weak self] image in
+            initialState: initialState,
+            historyItemID: historyItemID,
+            onComplete: { [weak self] image, historyItem in
+                if let historyItem {
+                    self?.storeHistoryItem(historyItem)
+                } else if let historyItemID {
+                    self?.removeHistoryItem(id: historyItemID)
+                }
                 self?.clipboardService.copy(image: image)
                 self?.annotationWindowController?.close()
                 self?.annotationWindowController = nil
             },
-            onCancel: { [weak self] in
+            onCancel: { [weak self] historyItem in
+                if let historyItem {
+                    self?.storeHistoryItem(historyItem)
+                } else if let historyItemID {
+                    self?.removeHistoryItem(id: historyItemID)
+                }
                 self?.annotationWindowController?.close()
                 self?.annotationWindowController = nil
             }
@@ -76,5 +107,17 @@ final class QuickEyeController {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private func storeHistoryItem(_ historyItem: CaptureHistoryItem) {
+        historyItems.removeAll { $0.id == historyItem.id }
+        historyItems.insert(historyItem, at: 0)
+        if historyItems.count > historyLimit {
+            historyItems = Array(historyItems.prefix(historyLimit))
+        }
+    }
+
+    private func removeHistoryItem(id: UUID) {
+        historyItems.removeAll { $0.id == id }
     }
 }

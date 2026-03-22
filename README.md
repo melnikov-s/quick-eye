@@ -34,6 +34,7 @@ Those workflows are much more direct in AppKit than in a webview shell. Tauri co
 - A visual dropdown color picker for annotation stroke styling.
 - A separate auto-crop export action that trims to your annotated area with padding.
 - Crop mode for exporting only the relevant area.
+- In-app history for the 10 most recent annotated captures.
 - Undo and redo for annotation and crop changes.
 - Clipboard export on completion.
 

@@ -76,6 +76,21 @@ struct AnnotationSnapshot {
     var cropRect: CGRect?
 }
 
+typealias AnnotationHistoryState = AnnotationSnapshot
+
+struct CaptureHistoryItem {
+    let id: UUID
+    let capture: ScreenCapture
+    let state: AnnotationHistoryState
+    let thumbnail: NSImage
+    let createdAt: Date
+}
+
+struct AnnotationHistoryPayload {
+    let state: AnnotationHistoryState
+    let previewImage: NSImage
+}
+
 struct ColorOption {
     let name: String
     let color: NSColor
