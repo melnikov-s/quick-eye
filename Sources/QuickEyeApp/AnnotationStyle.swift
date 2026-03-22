@@ -32,6 +32,7 @@ enum ToolMode: CaseIterable {
 }
 
 struct CanvasAnnotation {
+    let id: UUID
     var kind: AnnotationKind
     var text: String
     var style: AnnotationStyle
@@ -127,6 +128,22 @@ extension Array where Element == CGPoint {
 extension CGPoint {
     func distance(to other: CGPoint) -> CGFloat {
         hypot(other.x - x, other.y - y)
+    }
+}
+
+extension CGSize {
+    static prefix func -(size: CGSize) -> CGSize {
+        CGSize(width: -size.width, height: -size.height)
+    }
+}
+
+extension CGPoint {
+    static func +(point: CGPoint, delta: CGSize) -> CGPoint {
+        CGPoint(x: point.x + delta.width, y: point.y + delta.height)
+    }
+
+    static func -(lhs: CGPoint, rhs: CGPoint) -> CGSize {
+        CGSize(width: lhs.x - rhs.x, height: lhs.y - rhs.y)
     }
 }
 

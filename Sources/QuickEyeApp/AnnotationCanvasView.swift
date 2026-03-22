@@ -20,6 +20,11 @@ final class AnnotationCanvasView: NSView {
     private var toolMode: ToolMode = .arrow
     private var annotationStyle: AnnotationStyle = .default
     private var cropRect: CGRect?
+    private var selectedAnnotationID: UUID?
+    private var movingAnnotationID: UUID?
+    private var moveStartPoint: CGPoint?
+    private var moveOriginalAnnotation: CanvasAnnotation?
+    private var hasRecordedMoveSnapshot = false
 
     private var undoStack: [AnnotationSnapshot] = []
     private var redoStack: [AnnotationSnapshot] = []
@@ -124,6 +129,18 @@ final class AnnotationCanvasView: NSView {
         guard activeEditor == nil else { return }
 
         let point = convert(event.locationInWindow, from: nil)
+
+        if let hitAnnotation = annotation(at: point) {
+            selectedAnnotationID = hitAnnotation.id
+            movingAnnotationID = hitAnnotation.id
+            moveStartPoint = point
+            moveOriginalAnnotation = hitAnnotation
+            hasRecordedMoveSnapshot = false
+            needsDisplay = true
+            return
+        }
+
+        selectedAnnotationID = nil
         dragStartPoint = point
         dragCurrentPoint = point
 
@@ -135,9 +152,25 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard dragStartPoint != nil else { return }
-
         let point = convert(event.locationInWindow, from: nil)
+
+        if let movingAnnotationID, let moveStartPoint, let moveOriginalAnnotation {
+            let delta = point - moveStartPoint
+            if !hasRecordedMoveSnapshot, abs(delta.width) + abs(delta.height) > 2 {
+                registerSnapshot()
+                hasRecordedMoveSnapshot = true
+            }
+
+            if let index = annotations.firstIndex(where: { $0.id == movingAnnotationID }) {
+                annotations[index] = translatedAnnotation(moveOriginalAnnotation, by: delta)
+                selectedAnnotationID = movingAnnotationID
+                refreshHUDState()
+                needsDisplay = true
+            }
+            return
+        }
+
+        guard dragStartPoint != nil else { return }
         dragCurrentPoint = point
 
         if toolMode == .freeform {
@@ -148,6 +181,15 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if movingAnnotationID != nil {
+            movingAnnotationID = nil
+            moveStartPoint = nil
+            moveOriginalAnnotation = nil
+            hasRecordedMoveSnapshot = false
+            needsDisplay = true
+            return
+        }
+
         guard let annotationOrCrop = makeResultFromCurrentDrag(
             endingAt: convert(event.locationInWindow, from: nil)
         ) else {
@@ -192,6 +234,11 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
+        if isDeleteKey(event.keyCode) {
+            deleteSelectedAnnotation()
+            return
+        }
+
         if isReturnKey(event.keyCode) {
             if event.modifierFlags.contains(.shift) {
                 finishCapture(autoCrop: true)
@@ -215,6 +262,7 @@ final class AnnotationCanvasView: NSView {
         switch toolMode {
         case .arrow:
             let annotation = CanvasAnnotation(
+                id: UUID(),
                 kind: .arrow(start: start, end: endPoint),
                 text: "",
                 style: annotationStyle
@@ -223,6 +271,7 @@ final class AnnotationCanvasView: NSView {
         case .rectangle:
             let rect = rect(from: start, to: endPoint)
             let annotation = CanvasAnnotation(
+                id: UUID(),
                 kind: .rectangle(rect),
                 text: "",
                 style: annotationStyle
@@ -231,6 +280,7 @@ final class AnnotationCanvasView: NSView {
         case .ellipse:
             let rect = rect(from: start, to: endPoint)
             let annotation = CanvasAnnotation(
+                id: UUID(),
                 kind: .ellipse(rect),
                 text: "",
                 style: annotationStyle
@@ -242,6 +292,7 @@ final class AnnotationCanvasView: NSView {
                 points.append(endPoint)
             }
             let annotation = CanvasAnnotation(
+                id: UUID(),
                 kind: .freeform(points),
                 text: "",
                 style: annotationStyle
@@ -278,6 +329,7 @@ final class AnnotationCanvasView: NSView {
         registerSnapshot()
         pendingAnnotation.text = text
         annotations.append(pendingAnnotation)
+        selectedAnnotationID = pendingAnnotation.id
         self.pendingAnnotation = nil
         removeEditor()
         refreshHUDState()
@@ -308,6 +360,7 @@ final class AnnotationCanvasView: NSView {
         annotations.removeAll()
         cropRect = nil
         pendingAnnotation = nil
+        selectedAnnotationID = nil
         undoStack.removeAll()
         redoStack.removeAll()
         resetDragState()
@@ -341,6 +394,7 @@ final class AnnotationCanvasView: NSView {
         annotations = snapshot.annotations
         cropRect = snapshot.cropRect
         pendingAnnotation = nil
+        selectedAnnotationID = nil
         removeEditor()
         refreshHUDState()
         needsDisplay = true
@@ -378,11 +432,11 @@ final class AnnotationCanvasView: NSView {
 
         switch toolMode {
         case .arrow:
-            return CanvasAnnotation(kind: .arrow(start: start, end: end), text: "", style: annotationStyle)
+            return CanvasAnnotation(id: UUID(), kind: .arrow(start: start, end: end), text: "", style: annotationStyle)
         case .rectangle:
-            return CanvasAnnotation(kind: .rectangle(rect(from: start, to: end)), text: "", style: annotationStyle)
+            return CanvasAnnotation(id: UUID(), kind: .rectangle(rect(from: start, to: end)), text: "", style: annotationStyle)
         case .ellipse:
-            return CanvasAnnotation(kind: .ellipse(rect(from: start, to: end)), text: "", style: annotationStyle)
+            return CanvasAnnotation(id: UUID(), kind: .ellipse(rect(from: start, to: end)), text: "", style: annotationStyle)
         case .freeform:
             return nil
         case .crop:
@@ -421,6 +475,10 @@ final class AnnotationCanvasView: NSView {
             if !annotation.text.isEmpty {
                 drawTextBubble(text: annotation.text, near: annotation.textAnchor, style: annotation.style)
             }
+        }
+
+        if annotation.id == selectedAnnotationID {
+            drawSelectionOutline(for: annotation)
         }
     }
 
@@ -522,6 +580,18 @@ final class AnnotationCanvasView: NSView {
 
         path.lineWidth = lineWidth
         color.setStroke()
+        path.stroke()
+    }
+
+    private func drawSelectionOutline(for annotation: CanvasAnnotation) {
+        guard let bounds = annotationBounds(annotation), !bounds.isNull else { return }
+
+        let outlineRect = bounds.insetBy(dx: -8, dy: -8)
+        let path = NSBezierPath(roundedRect: outlineRect, xRadius: 10, yRadius: 10)
+        let dash: [CGFloat] = [7, 5]
+        path.setLineDash(dash, count: dash.count, phase: 0)
+        path.lineWidth = 2
+        NSColor.controlAccentColor.setStroke()
         path.stroke()
     }
 
@@ -728,10 +798,91 @@ final class AnnotationCanvasView: NSView {
         dragStartPoint = nil
         dragCurrentPoint = nil
         freeformPoints.removeAll()
+        movingAnnotationID = nil
+        moveStartPoint = nil
+        moveOriginalAnnotation = nil
+        hasRecordedMoveSnapshot = false
     }
 
     private func isReturnKey(_ keyCode: UInt16) -> Bool {
         keyCode == UInt16(kVK_Return) || keyCode == 76
+    }
+
+    private func isDeleteKey(_ keyCode: UInt16) -> Bool {
+        keyCode == UInt16(kVK_Delete) || keyCode == UInt16(kVK_ForwardDelete)
+    }
+
+    private func deleteSelectedAnnotation() {
+        guard let selectedAnnotationID,
+              annotations.contains(where: { $0.id == selectedAnnotationID }) else { return }
+
+        registerSnapshot()
+        annotations.removeAll { $0.id == selectedAnnotationID }
+        self.selectedAnnotationID = nil
+        refreshHUDState()
+        needsDisplay = true
+    }
+
+    private func annotation(at point: CGPoint) -> CanvasAnnotation? {
+        for annotation in annotations.reversed() {
+            if annotationContainsPoint(annotation, point: point) {
+                return annotation
+            }
+        }
+        return nil
+    }
+
+    private func annotationContainsPoint(_ annotation: CanvasAnnotation, point: CGPoint) -> Bool {
+        if !annotation.text.isEmpty && textBubbleRect(text: annotation.text, near: annotation.textAnchor).contains(point) {
+            return true
+        }
+
+        switch annotation.kind {
+        case let .arrow(start, end):
+            return distanceFromPoint(point, toSegmentStart: start, end: end) <= 18
+        case let .rectangle(rect):
+            return rect.insetBy(dx: -12, dy: -12).contains(point)
+        case let .ellipse(rect):
+            return rect.insetBy(dx: -12, dy: -12).contains(point)
+        case let .freeform(points):
+            return points.boundingRect.insetBy(dx: -12, dy: -12).contains(point)
+        }
+    }
+
+    private func translatedAnnotation(_ annotation: CanvasAnnotation, by delta: CGSize) -> CanvasAnnotation {
+        var moved = annotation
+        switch annotation.kind {
+        case let .arrow(start, end):
+            moved.kind = .arrow(start: start + delta, end: end + delta)
+        case let .rectangle(rect):
+            moved.kind = .rectangle(rect.offsetBy(dx: delta.width, dy: delta.height))
+        case let .ellipse(rect):
+            moved.kind = .ellipse(rect.offsetBy(dx: delta.width, dy: delta.height))
+        case let .freeform(points):
+            moved.kind = .freeform(points.map { $0 + delta })
+        }
+        return moved
+    }
+
+    private func distanceFromPoint(_ point: CGPoint, toSegmentStart start: CGPoint, end: CGPoint) -> CGFloat {
+        let segment = end - start
+        let pointVector = point - start
+        let segmentLengthSquared = (segment.width * segment.width) + (segment.height * segment.height)
+        guard segmentLengthSquared > 0 else { return point.distance(to: start) }
+
+        let projection = max(
+            0,
+            min(
+                1,
+                ((pointVector.width * segment.width) + (pointVector.height * segment.height)) / segmentLengthSquared
+            )
+        )
+
+        let closest = CGPoint(
+            x: start.x + segment.width * projection,
+            y: start.y + segment.height * projection
+        )
+        return point.distance(to: closest)
     }
 
     private func historyPayloadForPersistence() -> AnnotationHistoryPayload? {
