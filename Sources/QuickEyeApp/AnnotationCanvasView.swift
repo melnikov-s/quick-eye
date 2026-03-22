@@ -14,6 +14,7 @@ final class AnnotationCanvasView: NSView {
     private static let textBubblePreferredMaxWidth: CGFloat = 360
     private static let textBubbleExpandedMaxWidth: CGFloat = 460
     private static let textBubbleFontSizes: [CGFloat] = [18, 16, 14, 13]
+    private static let textBubbleCollisionPadding: CGFloat = 10
 
     private struct TextBubbleLayout {
         let bubbleRect: CGRect
@@ -131,13 +132,14 @@ final class AnnotationCanvasView: NSView {
 
         screenshot.draw(in: bounds)
         drawBaseOverlay()
+        let bubbleLayouts = currentTextBubbleLayouts()
 
         annotations.forEach { annotation in
-            drawAnnotation(annotation)
+            drawAnnotation(annotation, bubbleLayout: bubbleLayouts[annotation.id])
         }
 
         if let pendingAnnotation {
-            drawAnnotation(pendingAnnotation, isDraft: true)
+            drawAnnotation(pendingAnnotation, isDraft: true, bubbleLayout: bubbleLayouts[pendingAnnotation.id])
         } else {
             drawLivePreview()
         }
@@ -520,7 +522,11 @@ final class AnnotationCanvasView: NSView {
         }
     }
 
-    private func drawAnnotation(_ annotation: CanvasAnnotation, isDraft: Bool = false) {
+    private func drawAnnotation(
+        _ annotation: CanvasAnnotation,
+        isDraft: Bool = false,
+        bubbleLayout: TextBubbleLayout? = nil
+    ) {
         switch annotation.kind {
         case let .arrow(start, end):
             drawArrow(
@@ -528,7 +534,8 @@ final class AnnotationCanvasView: NSView {
                 to: end,
                 text: annotation.text,
                 style: annotation.style,
-                isDraft: isDraft
+                isDraft: isDraft,
+                textBubbleLayout: bubbleLayout
             )
         case let .rectangle(rect):
             drawRectangularShape(
@@ -536,7 +543,8 @@ final class AnnotationCanvasView: NSView {
                 text: annotation.text,
                 style: annotation.style,
                 isDraft: isDraft,
-                makePath: { NSBezierPath(rect: $0) }
+                makePath: { NSBezierPath(rect: $0) },
+                textBubbleLayout: bubbleLayout
             )
         case let .ellipse(rect):
             drawRectangularShape(
@@ -544,12 +552,17 @@ final class AnnotationCanvasView: NSView {
                 text: annotation.text,
                 style: annotation.style,
                 isDraft: isDraft,
-                makePath: { NSBezierPath(ovalIn: $0) }
+                makePath: { NSBezierPath(ovalIn: $0) },
+                textBubbleLayout: bubbleLayout
             )
         case let .freeform(points):
             drawFreeform(points: points, style: annotation.style, isDraft: isDraft)
             if !annotation.text.isEmpty {
-                drawTextBubble(text: annotation.text, near: annotation.textAnchor, style: annotation.style)
+                drawTextBubble(
+                    bubbleLayout ?? textBubbleLayout(text: annotation.text, near: annotation.textAnchor),
+                    anchor: annotation.textAnchor,
+                    style: annotation.style
+                )
             }
         }
 
@@ -563,7 +576,8 @@ final class AnnotationCanvasView: NSView {
         to end: CGPoint,
         text: String,
         style: AnnotationStyle,
-        isDraft: Bool
+        isDraft: Bool,
+        textBubbleLayout: TextBubbleLayout?
     ) {
         let shaftLength = start.distance(to: end)
         let minimumLengthToRenderArrow: CGFloat = 6
@@ -596,7 +610,11 @@ final class AnnotationCanvasView: NSView {
         strokeAnnotationPath(head, color: style.strokeColor, lineWidth: 4)
 
         if !text.isEmpty {
-            drawTextBubble(text: text, near: end, style: style)
+            drawTextBubble(
+                textBubbleLayout ?? self.textBubbleLayout(text: text, near: end),
+                anchor: end,
+                style: style
+            )
         }
     }
 
@@ -605,7 +623,8 @@ final class AnnotationCanvasView: NSView {
         text: String,
         style: AnnotationStyle,
         isDraft: Bool,
-        makePath: (CGRect) -> NSBezierPath
+        makePath: (CGRect) -> NSBezierPath,
+        textBubbleLayout: TextBubbleLayout?
     ) {
         let path = makePath(rect)
         let dash: [CGFloat] = isDraft ? [8, 5] : []
@@ -615,7 +634,12 @@ final class AnnotationCanvasView: NSView {
         strokeAnnotationPath(path, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
 
         if !text.isEmpty {
-            drawTextBubble(text: text, near: CGPoint(x: rect.maxX, y: rect.maxY), style: style)
+            let anchor = CGPoint(x: rect.maxX, y: rect.maxY)
+            drawTextBubble(
+                textBubbleLayout ?? self.textBubbleLayout(text: text, near: anchor),
+                anchor: anchor,
+                style: style
+            )
         }
     }
 
@@ -632,9 +656,18 @@ final class AnnotationCanvasView: NSView {
         strokeAnnotationPath(path, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
     }
 
-    private func drawTextBubble(text: String, near point: CGPoint, style: AnnotationStyle) {
-        let layout = textBubbleLayout(text: text, near: point)
+    private func drawTextBubble(_ layout: TextBubbleLayout, anchor point: CGPoint, style: AnnotationStyle) {
         let rect = layout.bubbleRect
+        if let connectorPoint = closestPoint(on: rect, to: point),
+           point.distance(to: connectorPoint) > 10 {
+            let connector = NSBezierPath()
+            connector.move(to: point)
+            connector.line(to: connectorPoint)
+            connector.lineCapStyle = .round
+            let dash: [CGFloat] = [6, 4]
+            connector.setLineDash(dash, count: dash.count, phase: 0)
+            strokeAnnotationPath(connector, color: style.strokeColor, lineWidth: 2.5)
+        }
 
         let background = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
         Self.textBubbleBackgroundColor.setFill()
@@ -898,11 +931,14 @@ final class AnnotationCanvasView: NSView {
         let shapeBounds = shapeBounds(for: annotation.kind)
         guard !shapeBounds.isNull else { return nil }
 
-        if annotation.text.isEmpty {
+        guard !annotation.text.isEmpty else {
             return shapeBounds
         }
 
-        let bubbleBounds = textBubbleRect(text: annotation.text, near: annotation.textAnchor)
+        guard let bubbleBounds = textBubbleRect(for: annotation) else {
+            return shapeBounds
+        }
+
         return shapeBounds.union(bubbleBounds)
     }
 
@@ -930,11 +966,16 @@ final class AnnotationCanvasView: NSView {
         }
     }
 
-    private func textBubbleRect(text: String, near point: CGPoint) -> CGRect {
-        textBubbleLayout(text: text, near: point).bubbleRect
+    private func textBubbleRect(for annotation: CanvasAnnotation) -> CGRect? {
+        guard !annotation.text.isEmpty else { return nil }
+        return currentTextBubbleLayouts()[annotation.id]?.bubbleRect
     }
 
-    private func textBubbleLayout(text: String, near point: CGPoint) -> TextBubbleLayout {
+    private func textBubbleLayout(
+        text: String,
+        near point: CGPoint,
+        occupiedRects: [CGRect] = []
+    ) -> TextBubbleLayout {
         let safeBounds = bounds.insetBy(dx: Self.textBubbleSafeInset, dy: Self.textBubbleSafeInset)
         let absoluteMaxTextWidth = max(
             160,
@@ -959,7 +1000,8 @@ final class AnnotationCanvasView: NSView {
                     near: point,
                     safeBounds: safeBounds,
                     fontSize: fontSize,
-                    maxTextWidth: textWidth
+                    maxTextWidth: textWidth,
+                    occupiedRects: occupiedRects
                 )
 
                 fallbackLayout = layout
@@ -974,7 +1016,8 @@ final class AnnotationCanvasView: NSView {
             near: point,
             safeBounds: safeBounds,
             fontSize: Self.textBubbleFontSizes.last ?? 13,
-            maxTextWidth: absoluteMaxTextWidth
+            maxTextWidth: absoluteMaxTextWidth,
+            occupiedRects: occupiedRects
         )
     }
 
@@ -983,7 +1026,8 @@ final class AnnotationCanvasView: NSView {
         near point: CGPoint,
         safeBounds: CGRect,
         fontSize: CGFloat,
-        maxTextWidth: CGFloat
+        maxTextWidth: CGFloat,
+        occupiedRects: [CGRect]
     ) -> TextBubbleLayout {
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineBreakMode = .byWordWrapping
@@ -1010,7 +1054,8 @@ final class AnnotationCanvasView: NSView {
         let bubbleOrigin = positionedTextBubbleOrigin(
             near: point,
             bubbleSize: bubbleSize,
-            safeBounds: safeBounds
+            safeBounds: safeBounds,
+            occupiedRects: occupiedRects
         )
         let bubbleRect = CGRect(origin: bubbleOrigin, size: bubbleSize)
         let textRect = bubbleRect.insetBy(
@@ -1028,37 +1073,107 @@ final class AnnotationCanvasView: NSView {
     private func positionedTextBubbleOrigin(
         near point: CGPoint,
         bubbleSize: CGSize,
+        safeBounds: CGRect,
+        occupiedRects: [CGRect]
+    ) -> CGPoint {
+        let preferredOrigin = CGPoint(
+            x: point.x + Self.textBubbleOffset,
+            y: point.y + Self.textBubbleOffset
+        )
+        let candidateOrigins = candidateTextBubbleOrigins(near: point, bubbleSize: bubbleSize)
+
+        var bestOrigin = clampedBubbleOrigin(preferredOrigin, bubbleSize: bubbleSize, safeBounds: safeBounds)
+        var bestOverlap = overlapArea(
+            for: CGRect(origin: bestOrigin, size: bubbleSize),
+            occupiedRects: occupiedRects
+        )
+        var bestDistance = point.distance(to: bestOrigin)
+
+        for origin in candidateOrigins {
+            let clampedOrigin = clampedBubbleOrigin(origin, bubbleSize: bubbleSize, safeBounds: safeBounds)
+            let candidateRect = CGRect(origin: clampedOrigin, size: bubbleSize)
+            let overlap = overlapArea(for: candidateRect, occupiedRects: occupiedRects)
+            let distance = preferredOrigin.distance(to: clampedOrigin)
+
+            if overlap == 0 {
+                return clampedOrigin
+            }
+
+            if overlap < bestOverlap || (overlap == bestOverlap && distance < bestDistance) {
+                bestOrigin = clampedOrigin
+                bestOverlap = overlap
+                bestDistance = distance
+            }
+        }
+
+        return bestOrigin
+    }
+
+    private func candidateTextBubbleOrigins(near point: CGPoint, bubbleSize: CGSize) -> [CGPoint] {
+        let offset = Self.textBubbleOffset
+        let centeredX = point.x - (bubbleSize.width / 2)
+        let centeredY = point.y - (bubbleSize.height / 2)
+
+        return [
+            CGPoint(x: point.x + offset, y: point.y + offset),
+            CGPoint(x: point.x - bubbleSize.width - offset, y: point.y + offset),
+            CGPoint(x: point.x + offset, y: point.y - bubbleSize.height - offset),
+            CGPoint(x: point.x - bubbleSize.width - offset, y: point.y - bubbleSize.height - offset),
+            CGPoint(x: centeredX, y: point.y + offset),
+            CGPoint(x: centeredX, y: point.y - bubbleSize.height - offset),
+            CGPoint(x: point.x + offset, y: centeredY),
+            CGPoint(x: point.x - bubbleSize.width - offset, y: centeredY),
+        ]
+    }
+
+    private func clampedBubbleOrigin(
+        _ origin: CGPoint,
+        bubbleSize: CGSize,
         safeBounds: CGRect
     ) -> CGPoint {
-        let preferredRightX = point.x + Self.textBubbleOffset
-        let preferredLeftX = point.x - bubbleSize.width - Self.textBubbleOffset
-        let x: CGFloat
-        if preferredRightX + bubbleSize.width <= safeBounds.maxX {
-            x = preferredRightX
-        } else if preferredLeftX >= safeBounds.minX {
-            x = preferredLeftX
-        } else {
-            x = min(
-                max(safeBounds.minX, preferredRightX),
-                safeBounds.maxX - bubbleSize.width
+        CGPoint(
+            x: min(max(safeBounds.minX, origin.x), safeBounds.maxX - bubbleSize.width),
+            y: min(max(safeBounds.minY, origin.y), safeBounds.maxY - bubbleSize.height)
+        )
+    }
+
+    private func overlapArea(for candidateRect: CGRect, occupiedRects: [CGRect]) -> CGFloat {
+        occupiedRects.reduce(0) { total, occupiedRect in
+            let intersection = candidateRect.intersection(occupiedRect)
+            guard !intersection.isNull else { return total }
+            return total + (intersection.width * intersection.height)
+        }
+    }
+
+    private func currentTextBubbleLayouts() -> [UUID: TextBubbleLayout] {
+        var layouts: [UUID: TextBubbleLayout] = [:]
+        var occupiedRects: [CGRect] = []
+
+        let orderedAnnotations = annotations + (pendingAnnotation.map { [$0] } ?? [])
+        for annotation in orderedAnnotations where !annotation.text.isEmpty {
+            let layout = textBubbleLayout(
+                text: annotation.text,
+                near: annotation.textAnchor,
+                occupiedRects: occupiedRects
+            )
+            layouts[annotation.id] = layout
+            occupiedRects.append(
+                layout.bubbleRect.insetBy(
+                    dx: -Self.textBubbleCollisionPadding,
+                    dy: -Self.textBubbleCollisionPadding
+                )
             )
         }
 
-        let preferredTopY = point.y + Self.textBubbleOffset
-        let preferredBottomY = point.y - bubbleSize.height - Self.textBubbleOffset
-        let y: CGFloat
-        if preferredTopY + bubbleSize.height <= safeBounds.maxY {
-            y = preferredTopY
-        } else if preferredBottomY >= safeBounds.minY {
-            y = preferredBottomY
-        } else {
-            y = min(
-                max(safeBounds.minY, preferredBottomY),
-                safeBounds.maxY - bubbleSize.height
-            )
-        }
+        return layouts
+    }
 
-        return CGPoint(x: x, y: y)
+    private func closestPoint(on rect: CGRect, to point: CGPoint) -> CGPoint? {
+        guard !rect.isNull else { return nil }
+        return CGPoint(
+            x: min(max(point.x, rect.minX), rect.maxX),
+            y: min(max(point.y, rect.minY), rect.maxY)
+        )
     }
 
     private func arrowTargetFocusRect(target: CGPoint, tail: CGPoint) -> CGRect {
@@ -1143,7 +1258,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func annotationContainsPoint(_ annotation: CanvasAnnotation, point: CGPoint) -> Bool {
-        if !annotation.text.isEmpty && textBubbleRect(text: annotation.text, near: annotation.textAnchor).contains(point) {
+        if let bubbleRect = textBubbleRect(for: annotation), bubbleRect.contains(point) {
             return true
         }
 
