@@ -624,7 +624,7 @@ final class AnnotationCanvasView: NSView {
 
     private func autoCropRect() -> CGRect? {
         let allBounds = annotations
-            .compactMap(annotationBounds(_:))
+            .compactMap(autoCropBounds(_:))
             .reduce(into: CGRect.null) { partial, rect in
                 partial = partial.union(rect)
             }
@@ -757,6 +757,18 @@ final class AnnotationCanvasView: NSView {
         return shapeBounds.union(bubbleBounds)
     }
 
+    private func autoCropBounds(_ annotation: CanvasAnnotation) -> CGRect? {
+        guard var bounds = annotationBounds(annotation) else { return nil }
+
+        if case let .arrow(start, end) = annotation.kind {
+            bounds = bounds
+                .union(arrowTargetFocusRect(from: start, to: end))
+                .union(arrowSourceFocusRect(from: start, to: end))
+        }
+
+        return bounds
+    }
+
     private func shapeBounds(for kind: AnnotationKind) -> CGRect {
         switch kind {
         case let .arrow(start, end):
@@ -792,6 +804,50 @@ final class AnnotationCanvasView: NSView {
         }
 
         return rect
+    }
+
+    private func arrowTargetFocusRect(from start: CGPoint, to end: CGPoint) -> CGRect {
+        let focusSize = CGSize(width: 180, height: 180)
+        let halfSize = CGSize(width: focusSize.width / 2, height: focusSize.height / 2)
+
+        var origin = CGPoint(
+            x: end.x - halfSize.width,
+            y: end.y - halfSize.height
+        )
+
+        let delta = end - start
+        let length = max(sqrt((delta.width * delta.width) + (delta.height * delta.height)), 1)
+        let unit = CGSize(width: delta.width / length, height: delta.height / length)
+
+        // Bias the focus area slightly in the arrow direction so the target side
+        // gets more breathing room than the tail side.
+        origin.x += unit.width * 28
+        origin.y += unit.height * 28
+
+        let focusRect = CGRect(origin: origin, size: focusSize)
+        return focusRect.intersection(bounds)
+    }
+
+    private func arrowSourceFocusRect(from start: CGPoint, to end: CGPoint) -> CGRect {
+        let focusSize = CGSize(width: 110, height: 110)
+        let halfSize = CGSize(width: focusSize.width / 2, height: focusSize.height / 2)
+
+        var origin = CGPoint(
+            x: start.x - halfSize.width,
+            y: start.y - halfSize.height
+        )
+
+        let delta = end - start
+        let length = max(sqrt((delta.width * delta.width) + (delta.height * delta.height)), 1)
+        let unit = CGSize(width: delta.width / length, height: delta.height / length)
+
+        // Bias the source region slightly opposite the arrow direction so we keep
+        // more context around where the gesture started.
+        origin.x -= unit.width * 16
+        origin.y -= unit.height * 16
+
+        let focusRect = CGRect(origin: origin, size: focusSize)
+        return focusRect.intersection(bounds)
     }
 
     private func resetDragState() {
