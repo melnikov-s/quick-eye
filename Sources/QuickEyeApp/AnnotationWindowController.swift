@@ -6,6 +6,7 @@ final class AnnotationWindowController: NSWindowController {
         initialState: AnnotationHistoryState? = nil,
         historyItemID: UUID? = nil,
         onComplete: @escaping (NSImage, CaptureHistoryItem?) -> Void,
+        onConvertToText: @escaping (NSImage, CaptureHistoryItem?, @escaping (Result<Void, Swift.Error>) -> Void) -> Void,
         onCancel: @escaping (CaptureHistoryItem?) -> Void
     ) {
         let window = AnnotationWindow(
@@ -39,6 +40,21 @@ final class AnnotationWindowController: NSWindowController {
                             createdAt: Date()
                         )
                     }
+                )
+            },
+            onConvertToText: { image, historyPayload, completion in
+                onConvertToText(
+                    image,
+                    historyPayload.map {
+                        CaptureHistoryItem(
+                            id: historyItemID ?? UUID(),
+                            capture: capture,
+                            state: $0.state,
+                            thumbnail: $0.previewImage.quickEyeThumbnailImage,
+                            createdAt: Date()
+                        )
+                    },
+                    completion
                 )
             },
             onCancel: { historyPayload in

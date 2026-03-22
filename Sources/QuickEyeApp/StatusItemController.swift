@@ -47,6 +47,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         captureItem.target = self
         menu.addItem(captureItem)
 
+        let settingsItem = NSMenuItem(
+            title: "Prompt Settings",
+            action: #selector(openPromptSettings),
+            keyEquivalent: ""
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
         let historyItems = controller.captureHistory()
         if !historyItems.isEmpty {
             menu.addItem(NSMenuItem.separator())
@@ -83,6 +91,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         Task { @MainActor [weak self] in
             await self?.controller.beginCapture()
         }
+    }
+
+    @objc
+    private func openPromptSettings() {
+        controller.openPromptSettings()
     }
 
     @objc

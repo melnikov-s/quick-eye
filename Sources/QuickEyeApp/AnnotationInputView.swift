@@ -1,10 +1,54 @@
 import AppKit
 
-final class AnnotationInputView: NSView, NSTextFieldDelegate {
+final class AnnotationInputView: NSView, NSTextViewDelegate {
+    private enum Layout {
+        static let horizontalPadding: CGFloat = 12
+        static let topPadding: CGFloat = 12
+        static let bottomPadding: CGFloat = 10
+        static let buttonRowHeight: CGFloat = 24
+        static let buttonRowSpacing: CGFloat = 10
+        static let minHeight: CGFloat = 98
+        static let maxHeight: CGFloat = 230
+    }
+
     private let onSubmit: (String) -> Void
     private let onCancel: () -> Void
 
-    let textField = NSTextField()
+    var onPreferredHeightChange: ((CGFloat) -> Void)?
+
+    private lazy var textView: NSTextView = {
+        let view = NSTextView(frame: .zero)
+        view.delegate = self
+        view.drawsBackground = false
+        view.isRichText = false
+        view.importsGraphics = false
+        view.allowsUndo = true
+        view.font = NSFont.systemFont(ofSize: 13)
+        view.textContainerInset = CGSize(width: 2, height: 6)
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.minSize = CGSize(width: 0, height: 0)
+        view.maxSize = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.heightTracksTextView = false
+        return view
+    }()
+
+    private lazy var scrollView: NSScrollView = {
+        let view = NSScrollView()
+        view.borderType = .bezelBorder
+        view.hasVerticalScroller = true
+        view.drawsBackground = false
+        view.documentView = textView
+        return view
+    }()
+
+    private lazy var placeholderLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "What should the agent change?")
+        label.textColor = .placeholderTextColor
+        label.font = NSFont.systemFont(ofSize: 13)
+        return label
+    }()
 
     private lazy var addButton: NSButton = {
         let button = NSButton(title: "Add", target: self, action: #selector(submit))
@@ -17,6 +61,8 @@ final class AnnotationInputView: NSView, NSTextFieldDelegate {
         button.bezelStyle = .rounded
         return button
     }()
+
+    private var lastReportedHeight: CGFloat = Layout.minHeight
 
     init(
         initialText: String = "",
@@ -33,13 +79,14 @@ final class AnnotationInputView: NSView, NSTextFieldDelegate {
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.separatorColor.cgColor
 
-        textField.placeholderString = "What should the agent change?"
-        textField.stringValue = initialText
-        textField.delegate = self
+        textView.string = initialText
         addButton.title = submitButtonTitle
-        addSubview(textField)
+
+        addSubview(scrollView)
+        addSubview(placeholderLabel)
         addSubview(addButton)
         addSubview(cancelButton)
+        updatePlaceholderVisibility()
     }
 
     @available(*, unavailable)
@@ -50,13 +97,48 @@ final class AnnotationInputView: NSView, NSTextFieldDelegate {
     override func layout() {
         super.layout()
 
-        textField.frame = CGRect(x: 12, y: 40, width: bounds.width - 24, height: 28)
-        addButton.frame = CGRect(x: bounds.width - 82, y: 10, width: 70, height: 24)
-        cancelButton.frame = CGRect(x: bounds.width - 160, y: 10, width: 70, height: 24)
+        let buttonY = Layout.bottomPadding
+        addButton.frame = CGRect(x: bounds.width - 82, y: buttonY, width: 70, height: Layout.buttonRowHeight)
+        cancelButton.frame = CGRect(x: bounds.width - 160, y: buttonY, width: 70, height: Layout.buttonRowHeight)
+
+        let textAreaHeight = bounds.height - Layout.topPadding - Layout.bottomPadding - Layout.buttonRowHeight - Layout.buttonRowSpacing
+        scrollView.frame = CGRect(
+            x: Layout.horizontalPadding,
+            y: buttonY + Layout.buttonRowHeight + Layout.buttonRowSpacing,
+            width: bounds.width - (Layout.horizontalPadding * 2),
+            height: max(40, textAreaHeight)
+        )
+
+        placeholderLabel.frame = CGRect(
+            x: scrollView.frame.minX + 8,
+            y: scrollView.frame.maxY - 28,
+            width: scrollView.frame.width - 16,
+            height: 18
+        )
+
+        updatePreferredHeightIfNeeded()
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        focus()
+    }
+
+    func focus() {
+        window?.makeFirstResponder(textView)
+    }
+
+    func textDidChange(_ notification: Notification) {
+        updatePlaceholderVisibility()
+        updatePreferredHeightIfNeeded()
+    }
+
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                return false
+            }
+
             submit()
             return true
         }
@@ -71,11 +153,48 @@ final class AnnotationInputView: NSView, NSTextFieldDelegate {
 
     @objc
     private func submit() {
-        onSubmit(textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        onSubmit(textView.string.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     @objc
     private func cancel() {
         onCancel()
+    }
+
+    private func updatePlaceholderVisibility() {
+        placeholderLabel.isHidden = !textView.string.isEmpty
+    }
+
+    private func updatePreferredHeightIfNeeded() {
+        let targetHeight = preferredHeight(forWidth: max(bounds.width, 280))
+        guard abs(targetHeight - lastReportedHeight) > 1 else { return }
+        lastReportedHeight = targetHeight
+        onPreferredHeightChange?(targetHeight)
+    }
+
+    private func preferredHeight(forWidth width: CGFloat) -> CGFloat {
+        let textAreaWidth = width - (Layout.horizontalPadding * 2) - 4
+        guard textAreaWidth > 0 else { return Layout.minHeight }
+
+        let measuredTextHeight = measuredHeight(for: textAreaWidth)
+        let desiredHeight = measuredTextHeight
+            + Layout.topPadding
+            + Layout.bottomPadding
+            + Layout.buttonRowHeight
+            + Layout.buttonRowSpacing
+
+        return min(max(Layout.minHeight, desiredHeight), Layout.maxHeight)
+    }
+
+    private func measuredHeight(for width: CGFloat) -> CGFloat {
+        guard let textContainer = textView.textContainer,
+              let layoutManager = textView.layoutManager else {
+            return 44
+        }
+
+        textContainer.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return max(44, ceil(usedRect.height + (textView.textContainerInset.height * 2)))
     }
 }

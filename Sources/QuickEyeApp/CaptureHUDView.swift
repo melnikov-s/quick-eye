@@ -4,6 +4,7 @@ final class CaptureHUDView: NSView {
     private let onDone: () -> Void
     private let onDoneAutoCrop: () -> Void
     private let onDoneManualCrop: () -> Void
+    private let onDoneConvertToText: () -> Void
     private let onDiscard: () -> Void
     private let onUndo: () -> Void
     private let onRedo: () -> Void
@@ -83,14 +84,30 @@ final class CaptureHUDView: NSView {
         accessibilityLabel: "Manually crop an area, then copy",
         action: #selector(doneManualCrop)
     )
+    private lazy var doneConvertToTextButton = makeToolButton(
+        symbolName: "text.quote",
+        accessibilityLabel: "Convert the full annotated capture into text and copy it (Command+Enter)",
+        action: #selector(doneConvertToText)
+    )
+    private lazy var progressIndicator: NSProgressIndicator = {
+        let indicator = NSProgressIndicator()
+        indicator.style = .spinning
+        indicator.controlSize = .small
+        indicator.isDisplayedWhenStopped = false
+        return indicator
+    }()
 
     private var selectedTool: ToolMode = .arrow
     private var statusTextOverride: String?
+    private var isBusy = false
+    private var canUndo = false
+    private var canRedo = false
 
     init(
         onDone: @escaping () -> Void,
         onDoneAutoCrop: @escaping () -> Void,
         onDoneManualCrop: @escaping () -> Void,
+        onDoneConvertToText: @escaping () -> Void,
         onDiscard: @escaping () -> Void,
         onUndo: @escaping () -> Void,
         onRedo: @escaping () -> Void,
@@ -100,6 +117,7 @@ final class CaptureHUDView: NSView {
         self.onDone = onDone
         self.onDoneAutoCrop = onDoneAutoCrop
         self.onDoneManualCrop = onDoneManualCrop
+        self.onDoneConvertToText = onDoneConvertToText
         self.onDiscard = onDiscard
         self.onUndo = onUndo
         self.onRedo = onRedo
@@ -126,7 +144,9 @@ final class CaptureHUDView: NSView {
             clearButton,
             doneManualCropButton,
             doneAutoCropButton,
+            doneConvertToTextButton,
             doneButton,
+            progressIndicator,
         ].forEach(addSubview)
 
         setTool(.arrow)
@@ -140,13 +160,14 @@ final class CaptureHUDView: NSView {
     }
 
     override var fittingSize: NSSize {
-        NSSize(width: 560, height: 126)
+        NSSize(width: 620, height: 126)
     }
 
     override func layout() {
         super.layout()
 
-        titleLabel.frame = CGRect(x: 18, y: bounds.height - 34, width: bounds.width - 36, height: 18)
+        titleLabel.frame = CGRect(x: 18, y: bounds.height - 34, width: bounds.width - 70, height: 18)
+        progressIndicator.frame = CGRect(x: bounds.width - 34, y: bounds.height - 38, width: 16, height: 16)
 
         let toolButtonSize = CGSize(width: 34, height: 34)
         let toolY = bounds.height - 82
@@ -157,11 +178,12 @@ final class CaptureHUDView: NSView {
 
         strokeColorButton.frame = CGRect(x: 186, y: toolY, width: 48, height: 34)
 
-        undoButton.frame = CGRect(x: bounds.width - 290, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        redoButton.frame = CGRect(x: bounds.width - 250, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        clearButton.frame = CGRect(x: bounds.width - 170, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        doneManualCropButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        doneAutoCropButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        undoButton.frame = CGRect(x: bounds.width - 330, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        redoButton.frame = CGRect(x: bounds.width - 290, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        clearButton.frame = CGRect(x: bounds.width - 210, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        doneManualCropButton.frame = CGRect(x: bounds.width - 170, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        doneAutoCropButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        doneConvertToTextButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
         doneButton.frame = CGRect(x: bounds.width - 50, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
     }
 
@@ -183,14 +205,29 @@ final class CaptureHUDView: NSView {
     }
 
     func setUndoRedoState(canUndo: Bool, canRedo: Bool) {
+        self.canUndo = canUndo
+        self.canRedo = canRedo
         undoButton.isEnabled = canUndo
         redoButton.isEnabled = canRedo
         undoButton.alphaValue = canUndo ? 1 : 0.45
         redoButton.alphaValue = canRedo ? 1 : 0.45
+        updateBusyState()
     }
 
     func setStatusMessage(_ message: String?) {
         statusTextOverride = message
+        refreshTitle()
+    }
+
+    func setBusyState(isBusy: Bool, message: String?) {
+        self.isBusy = isBusy
+        statusTextOverride = message
+        if isBusy {
+            progressIndicator.startAnimation(nil)
+        } else {
+            progressIndicator.stopAnimation(nil)
+        }
+        updateBusyState()
         refreshTitle()
     }
 
@@ -207,6 +244,11 @@ final class CaptureHUDView: NSView {
     @objc
     private func doneManualCrop() {
         onDoneManualCrop()
+    }
+
+    @objc
+    private func doneConvertToText() {
+        onDoneConvertToText()
     }
 
     @objc
@@ -284,6 +326,55 @@ final class CaptureHUDView: NSView {
 
     private func refreshTitle() {
         titleLabel.stringValue = statusTextOverride ?? selectedTool.description
+    }
+
+    private func updateBusyState() {
+        if isBusy {
+            [
+                arrowToolButton,
+                rectangleToolButton,
+                ellipseToolButton,
+                freeformToolButton,
+                strokeColorButton,
+                undoButton,
+                redoButton,
+                clearButton,
+                doneManualCropButton,
+                doneAutoCropButton,
+                doneConvertToTextButton,
+                doneButton,
+            ].forEach {
+                $0.isEnabled = false
+                $0.alphaValue = 0.5
+            }
+            progressIndicator.alphaValue = 1
+            return
+        }
+
+        arrowToolButton.isEnabled = true
+        rectangleToolButton.isEnabled = true
+        ellipseToolButton.isEnabled = true
+        freeformToolButton.isEnabled = true
+        strokeColorButton.isEnabled = true
+        undoButton.isEnabled = canUndo
+        redoButton.isEnabled = canRedo
+        clearButton.isEnabled = true
+        doneManualCropButton.isEnabled = true
+        doneAutoCropButton.isEnabled = true
+        doneConvertToTextButton.isEnabled = true
+        doneButton.isEnabled = true
+
+        let toolButtons: [NSButton] = [arrowToolButton, rectangleToolButton, ellipseToolButton, freeformToolButton]
+        toolButtons.forEach { $0.alphaValue = 1 }
+        strokeColorButton.alphaValue = 1
+        clearButton.alphaValue = 1
+        doneManualCropButton.alphaValue = 1
+        doneAutoCropButton.alphaValue = 1
+        doneConvertToTextButton.alphaValue = 1
+        doneButton.alphaValue = 1
+        undoButton.alphaValue = canUndo ? 1 : 0.45
+        redoButton.alphaValue = canRedo ? 1 : 0.45
+        progressIndicator.alphaValue = 0
     }
 
     private func makeToolButton(symbolName: String, accessibilityLabel: String, action: Selector) -> NSButton {

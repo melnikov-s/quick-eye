@@ -25,6 +25,7 @@ final class AnnotationCanvasView: NSView {
     private let screenshot: NSImage
     private let defaultExportRect: CGRect
     private let onComplete: (NSImage, AnnotationHistoryPayload?) -> Void
+    private let onConvertToText: (NSImage, AnnotationHistoryPayload?, @escaping (Result<Void, Swift.Error>) -> Void) -> Void
     private let onCancel: (AnnotationHistoryPayload?) -> Void
 
     private var annotations: [CanvasAnnotation] = []
@@ -35,6 +36,7 @@ final class AnnotationCanvasView: NSView {
     private var toolMode: ToolMode = .arrow
     private var annotationStyle: AnnotationStyle = .default
     private var isAwaitingManualCrop = false
+    private var isGeneratingTextPrompt = false
     private var selectedAnnotationID: UUID?
     private var movingAnnotationID: UUID?
     private var moveStartPoint: CGPoint?
@@ -54,6 +56,9 @@ final class AnnotationCanvasView: NSView {
             },
             onDoneManualCrop: { [weak self] in
                 self?.beginManualCropExport()
+            },
+            onDoneConvertToText: { [weak self] in
+                self?.convertCaptureToText()
             },
             onDiscard: { [weak self] in
                 self?.discardCapture()
@@ -83,11 +88,13 @@ final class AnnotationCanvasView: NSView {
         defaultExportRect: CGRect,
         initialState: AnnotationHistoryState? = nil,
         onComplete: @escaping (NSImage, AnnotationHistoryPayload?) -> Void,
+        onConvertToText: @escaping (NSImage, AnnotationHistoryPayload?, @escaping (Result<Void, Swift.Error>) -> Void) -> Void,
         onCancel: @escaping (AnnotationHistoryPayload?) -> Void
     ) {
         self.screenshot = screenshot
         self.defaultExportRect = defaultExportRect
         self.onComplete = onComplete
+        self.onConvertToText = onConvertToText
         self.onCancel = onCancel
         super.init(frame: frame)
         wantsLayer = true
@@ -135,18 +142,27 @@ final class AnnotationCanvasView: NSView {
         let bubbleLayouts = currentTextBubbleLayouts()
 
         annotations.forEach { annotation in
-            drawAnnotation(annotation, bubbleLayout: bubbleLayouts[annotation.id])
+            drawAnnotation(
+                annotation,
+                bubbleLayout: bubbleLayouts[annotation.id],
+                showsSelectionOutline: true
+            )
         }
 
         if let pendingAnnotation {
-            drawAnnotation(pendingAnnotation, isDraft: true, bubbleLayout: bubbleLayouts[pendingAnnotation.id])
+            drawAnnotation(
+                pendingAnnotation,
+                isDraft: true,
+                bubbleLayout: bubbleLayouts[pendingAnnotation.id],
+                showsSelectionOutline: true
+            )
         } else {
             drawLivePreview()
         }
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard activeEditor == nil else { return }
+        guard activeEditor == nil, !isGeneratingTextPrompt else { return }
 
         let point = convert(event.locationInWindow, from: nil)
 
@@ -193,6 +209,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard !isGeneratingTextPrompt else { return }
         let point = convert(event.locationInWindow, from: nil)
 
         if isAwaitingManualCrop {
@@ -229,6 +246,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard !isGeneratingTextPrompt else { return }
         if isAwaitingManualCrop {
             let endPoint = convert(event.locationInWindow, from: nil)
             finishManualCropIfPossible(endingAt: endPoint)
@@ -273,6 +291,15 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
+        if isGeneratingTextPrompt {
+            if event.keyCode == UInt16(kVK_Escape) {
+                cancelCapture()
+            } else {
+                super.keyDown(with: event)
+            }
+            return
+        }
+
         if isAwaitingManualCrop {
             if event.keyCode == UInt16(kVK_Escape) {
                 cancelCapture()
@@ -299,7 +326,9 @@ final class AnnotationCanvasView: NSView {
         }
 
         if isReturnKey(event.keyCode) {
-            if event.modifierFlags.contains(.shift) {
+            if event.modifierFlags.contains(.command) {
+                convertCaptureToText()
+            } else if event.modifierFlags.contains(.shift) {
                 finishCapture(autoCrop: true)
             } else {
                 finishCapture(autoCrop: false)
@@ -377,13 +406,20 @@ final class AnnotationCanvasView: NSView {
             }
         )
 
-        let desiredSize = CGSize(width: 280, height: 84)
+        let desiredSize = CGSize(width: 320, height: 110)
         let origin = clampedEditorOrigin(near: annotation.textAnchor, size: desiredSize)
         editor.frame = CGRect(origin: origin, size: desiredSize)
+        editor.onPreferredHeightChange = { [weak self, weak editor] newHeight in
+            guard let self, let editor else { return }
+
+            let newSize = CGSize(width: editor.frame.width, height: newHeight)
+            let newOrigin = self.clampedEditorOrigin(near: annotation.textAnchor, size: newSize)
+            editor.frame = CGRect(origin: newOrigin, size: newSize)
+        }
 
         addSubview(editor)
         activeEditor = editor
-        window?.makeFirstResponder(editor.textField)
+        editor.focus()
     }
 
     private func commitPendingAnnotation(text: String) {
@@ -431,6 +467,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func discardCapture() {
+        guard !isGeneratingTextPrompt else { return }
         annotations.removeAll()
         pendingAnnotation = nil
         isAwaitingManualCrop = false
@@ -476,9 +513,16 @@ final class AnnotationCanvasView: NSView {
 
     private func refreshHUDState() {
         hudView.setTool(toolMode)
-        hudView.setStatusMessage(
-            isAwaitingManualCrop ? "Manual crop: drag a frame to crop, copy, and finish." : nil
-        )
+        let statusMessage: String?
+        if isGeneratingTextPrompt {
+            statusMessage = "Generating text prompt..."
+        } else if isAwaitingManualCrop {
+            statusMessage = "Manual crop: drag a frame to crop, copy, and finish."
+        } else {
+            statusMessage = nil
+        }
+        hudView.setStatusMessage(statusMessage)
+        hudView.setBusyState(isBusy: isGeneratingTextPrompt, message: statusMessage)
         hudView.setUndoRedoState(canUndo: !undoStack.isEmpty, canRedo: !redoStack.isEmpty)
     }
 
@@ -525,7 +569,8 @@ final class AnnotationCanvasView: NSView {
     private func drawAnnotation(
         _ annotation: CanvasAnnotation,
         isDraft: Bool = false,
-        bubbleLayout: TextBubbleLayout? = nil
+        bubbleLayout: TextBubbleLayout? = nil,
+        showsSelectionOutline: Bool = false
     ) {
         switch annotation.kind {
         case let .arrow(start, end):
@@ -566,7 +611,7 @@ final class AnnotationCanvasView: NSView {
             }
         }
 
-        if annotation.id == selectedAnnotationID {
+        if showsSelectionOutline, annotation.id == selectedAnnotationID {
             drawSelectionOutline(for: annotation)
         }
     }
@@ -708,22 +753,12 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func finishCapture(autoCrop: Bool) {
+        guard !isGeneratingTextPrompt else { return }
         isAwaitingManualCrop = false
         pendingAnnotation = nil
         removeEditor()
 
-        let exportImage = rasterizedAnnotatedImage()
-        let finalizedImage: NSImage
-        if let exportCropRect = resolvedExportCropRect(autoCrop: autoCrop) {
-            finalizedImage = croppedImage(from: exportImage, cropRect: exportCropRect)
-        } else {
-            finalizedImage = exportImage
-        }
-
-        onComplete(
-            downscaledImageIfNeeded(from: finalizedImage),
-            historyPayloadForPersistence()
-        )
+        onComplete(finalizedExportImage(autoCrop: autoCrop), historyPayloadForPersistence())
     }
 
     private func resolvedExportCropRect(autoCrop: Bool) -> CGRect? {
@@ -742,7 +777,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func beginManualCropExport() {
-        guard activeEditor == nil else { return }
+        guard activeEditor == nil, !isGeneratingTextPrompt else { return }
 
         pendingAnnotation = nil
         selectedAnnotationID = nil
@@ -768,6 +803,41 @@ final class AnnotationCanvasView: NSView {
         resetDragState()
         refreshHUDState()
         onComplete(downscaledImageIfNeeded(from: finalizedImage), historyPayload)
+    }
+
+    private func convertCaptureToText() {
+        guard !isGeneratingTextPrompt else { return }
+
+        pendingAnnotation = nil
+        removeEditor()
+        isAwaitingManualCrop = false
+        isGeneratingTextPrompt = true
+        resetDragState()
+        refreshHUDState()
+        needsDisplay = true
+
+        onConvertToText(finalizedExportImage(autoCrop: false), historyPayloadForPersistence()) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if case .failure = result {
+                    self.isGeneratingTextPrompt = false
+                    self.refreshHUDState()
+                    self.needsDisplay = true
+                }
+            }
+        }
+    }
+
+    private func finalizedExportImage(autoCrop: Bool) -> NSImage {
+        let exportImage = rasterizedAnnotatedImage()
+        let finalizedImage: NSImage
+        if let exportCropRect = resolvedExportCropRect(autoCrop: autoCrop) {
+            finalizedImage = croppedImage(from: exportImage, cropRect: exportCropRect)
+        } else {
+            finalizedImage = exportImage
+        }
+
+        return downscaledImageIfNeeded(from: finalizedImage)
     }
 
     private func autoCropRect() -> CGRect? {
@@ -822,8 +892,13 @@ final class AnnotationCanvasView: NSView {
         let image = NSImage(size: bounds.size)
         image.lockFocus()
         screenshot.draw(in: bounds)
+        let bubbleLayouts = currentTextBubbleLayouts()
         annotations.forEach { annotation in
-            drawAnnotation(annotation)
+            drawAnnotation(
+                annotation,
+                bubbleLayout: bubbleLayouts[annotation.id],
+                showsSelectionOutline: false
+            )
         }
         image.unlockFocus()
         return image

@@ -5,9 +5,12 @@ final class QuickEyeController {
     private let screenshotService = ScreenshotService()
     private let clipboardService = ClipboardService()
     private let hotkeyManager = HotkeyManager()
+    private let promptSettingsStore = PromptSettingsStore()
+    private let promptGenerationService = PromptGenerationService()
     private let historyLimit = 10
 
     private var annotationWindowController: AnnotationWindowController?
+    private var promptSettingsWindowController: PromptSettingsWindowController?
     private var isCapturing = false
     private var historyItems: [CaptureHistoryItem] = []
 
@@ -49,6 +52,14 @@ final class QuickEyeController {
         NSApp.terminate(nil)
     }
 
+    func openPromptSettings() {
+        if promptSettingsWindowController == nil {
+            promptSettingsWindowController = PromptSettingsWindowController(store: promptSettingsStore)
+        }
+
+        promptSettingsWindowController?.showWindow(nil)
+    }
+
     func captureHistory() -> [CaptureHistoryItem] {
         historyItems
     }
@@ -83,6 +94,21 @@ final class QuickEyeController {
                 self?.annotationWindowController?.close()
                 self?.annotationWindowController = nil
             },
+            onConvertToText: { [weak self] image, historyItem, completion in
+                guard let self else {
+                    completion(.failure(PromptGenerationService.Error.malformedResponse))
+                    return
+                }
+
+                Task { @MainActor [weak self] in
+                    await self?.convertCaptureToPromptText(
+                        image: image,
+                        historyItem: historyItem,
+                        historyItemID: historyItemID,
+                        completion: completion
+                    )
+                }
+            },
             onCancel: { [weak self] historyItem in
                 if let historyItem {
                     self?.storeHistoryItem(historyItem)
@@ -96,6 +122,35 @@ final class QuickEyeController {
 
         annotationWindowController = controller
         controller.showWindow(nil)
+    }
+
+    private func convertCaptureToPromptText(
+        image: NSImage,
+        historyItem: CaptureHistoryItem?,
+        historyItemID: UUID?,
+        completion: @escaping (Result<Void, Swift.Error>) -> Void
+    ) async {
+        do {
+            let settings = promptSettingsStore.currentSettings()
+            let promptText = try await promptGenerationService.generatePrompt(from: image, settings: settings)
+
+            if let historyItem {
+                storeHistoryItem(historyItem)
+            } else if let historyItemID {
+                removeHistoryItem(id: historyItemID)
+            }
+
+            clipboardService.copy(text: promptText)
+            annotationWindowController?.close()
+            annotationWindowController = nil
+            completion(.success(()))
+        } catch {
+            showAlert(
+                title: "Prompt Generation Failed",
+                message: error.localizedDescription
+            )
+            completion(.failure(error))
+        }
     }
 
     private func showAlert(title: String, message: String) {
