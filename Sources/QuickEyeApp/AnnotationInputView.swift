@@ -18,7 +18,12 @@ final class AnnotationInputView: NSView, NSTextFieldDelegate {
         return button
     }()
 
-    init(onSubmit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(
+        initialText: String = "",
+        submitButtonTitle: String = "Add",
+        onSubmit: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         super.init(frame: .zero)
@@ -29,7 +34,9 @@ final class AnnotationInputView: NSView, NSTextFieldDelegate {
         layer?.borderColor = NSColor.separatorColor.cgColor
 
         textField.placeholderString = "What should the agent change?"
+        textField.stringValue = initialText
         textField.delegate = self
+        addButton.title = submitButtonTitle
         addSubview(textField)
         addSubview(addButton)
         addSubview(cancelButton)

@@ -132,6 +132,18 @@ final class AnnotationCanvasView: NSView {
 
         if let hitAnnotation = annotation(at: point) {
             selectedAnnotationID = hitAnnotation.id
+            if event.clickCount >= 2 {
+                presentEditor(
+                    for: hitAnnotation,
+                    initialText: hitAnnotation.text,
+                    submitButtonTitle: "Save",
+                    onSubmit: { [weak self] text in
+                        self?.updateAnnotationText(id: hitAnnotation.id, text: text)
+                    }
+                )
+                needsDisplay = true
+                return
+            }
             movingAnnotationID = hitAnnotation.id
             moveStartPoint = point
             moveOriginalAnnotation = hitAnnotation
@@ -203,7 +215,14 @@ final class AnnotationCanvasView: NSView {
         switch annotationOrCrop {
         case let .annotation(annotation):
             pendingAnnotation = annotation
-            presentEditor(for: annotation)
+            presentEditor(
+                for: annotation,
+                initialText: "",
+                submitButtonTitle: "Add",
+                onSubmit: { [weak self] text in
+                    self?.commitPendingAnnotation(text: text)
+                }
+            )
         case let .crop(rect):
             guard rect.width > 10, rect.height > 10 else {
                 needsDisplay = true
@@ -303,13 +322,18 @@ final class AnnotationCanvasView: NSView {
         }
     }
 
-    private func presentEditor(for annotation: CanvasAnnotation) {
+    private func presentEditor(
+        for annotation: CanvasAnnotation,
+        initialText: String,
+        submitButtonTitle: String,
+        onSubmit: @escaping (String) -> Void
+    ) {
         activeEditor?.removeFromSuperview()
 
         let editor = AnnotationInputView(
-            onSubmit: { [weak self] text in
-                self?.commitPendingAnnotation(text: text)
-            },
+            initialText: initialText,
+            submitButtonTitle: submitButtonTitle,
+            onSubmit: onSubmit,
             onCancel: { [weak self] in
                 self?.discardPendingAnnotation()
             }
@@ -331,6 +355,17 @@ final class AnnotationCanvasView: NSView {
         annotations.append(pendingAnnotation)
         selectedAnnotationID = pendingAnnotation.id
         self.pendingAnnotation = nil
+        removeEditor()
+        refreshHUDState()
+        needsDisplay = true
+    }
+
+    private func updateAnnotationText(id: UUID, text: String) {
+        guard let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        registerSnapshot()
+        annotations[index].text = text
+        selectedAnnotationID = id
+        pendingAnnotation = nil
         removeEditor()
         refreshHUDState()
         needsDisplay = true
