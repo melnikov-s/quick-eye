@@ -22,6 +22,7 @@ final class AnnotationCanvasView: NSView {
     }
 
     private let screenshot: NSImage
+    private let defaultExportRect: CGRect
     private let onComplete: (NSImage, AnnotationHistoryPayload?) -> Void
     private let onCancel: (AnnotationHistoryPayload?) -> Void
 
@@ -78,11 +79,13 @@ final class AnnotationCanvasView: NSView {
     init(
         frame: CGRect,
         screenshot: NSImage,
+        defaultExportRect: CGRect,
         initialState: AnnotationHistoryState? = nil,
         onComplete: @escaping (NSImage, AnnotationHistoryPayload?) -> Void,
         onCancel: @escaping (AnnotationHistoryPayload?) -> Void
     ) {
         self.screenshot = screenshot
+        self.defaultExportRect = defaultExportRect
         self.onComplete = onComplete
         self.onCancel = onCancel
         super.init(frame: frame)
@@ -691,8 +694,18 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func resolvedExportCropRect(autoCrop: Bool) -> CGRect? {
-        guard autoCrop else { return nil }
-        return autoCropRect()
+        let preferredExportRect = expandedPreferredExportRect()
+
+        if autoCrop {
+            if let cropRect = autoCropRect()?.intersection(preferredExportRect) {
+                return cropRect
+            }
+
+            return preferredExportRect == bounds ? nil : preferredExportRect
+        }
+
+        guard preferredExportRect != bounds else { return nil }
+        return preferredExportRect
     }
 
     private func beginManualCropExport() {
@@ -736,6 +749,40 @@ final class AnnotationCanvasView: NSView {
         let padding: CGFloat = 28
         let padded = allBounds.insetBy(dx: -padding, dy: -padding)
         return padded.intersection(bounds)
+    }
+
+    private func expandedPreferredExportRect() -> CGRect {
+        let baseRect = defaultExportRect.intersection(bounds)
+        guard !baseRect.isNull, baseRect.width > 0, baseRect.height > 0 else {
+            return bounds
+        }
+
+        let expanded = annotations.reduce(into: baseRect) { partial, annotation in
+            guard let annotationBounds = annotationBounds(annotation),
+                  !baseRect.contains(annotationBounds) else {
+                return
+            }
+
+            partial = partial.union(exportExpansionBounds(for: annotation) ?? annotationBounds)
+        }
+
+        if let pendingAnnotation,
+           let annotationBounds = annotationBounds(pendingAnnotation),
+           !baseRect.contains(annotationBounds) {
+            return expanded.union(exportExpansionBounds(for: pendingAnnotation) ?? annotationBounds)
+        }
+
+        return expanded.intersection(bounds)
+    }
+
+    private func exportExpansionBounds(for annotation: CanvasAnnotation) -> CGRect? {
+        guard let annotationBounds = annotationBounds(annotation) else { return nil }
+
+        if defaultExportRect.contains(annotationBounds) {
+            return annotationBounds
+        }
+
+        return autoCropBounds(annotation) ?? annotationBounds
     }
 
     private func rasterizedAnnotatedImage() -> NSImage {

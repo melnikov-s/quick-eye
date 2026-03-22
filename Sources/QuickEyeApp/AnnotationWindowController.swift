@@ -25,6 +25,7 @@ final class AnnotationWindowController: NSWindowController {
         let contentView = AnnotationCanvasView(
             frame: CGRect(origin: .zero, size: capture.screenFrame.size),
             screenshot: capture.image,
+            defaultExportRect: capture.defaultExportRect,
             initialState: initialState,
             onComplete: { image, historyPayload in
                 onComplete(
