@@ -126,7 +126,7 @@ final class CaptureHUDView: NSView {
         ].forEach(addSubview)
 
         setTool(.arrow)
-        selectColorOption(strokeColorOptions[0], on: strokeColorButton)
+        selectColorOption(strokeColorOptions[0], tag: 0, on: strokeColorButton)
         onStrokeColorChange(strokeColorOptions[0].color)
     }
 
@@ -243,6 +243,7 @@ final class CaptureHUDView: NSView {
 
     private func configureMenus() {
         strokeColorButton.menu = makeColorMenu(options: strokeColorOptions, selector: #selector(selectStrokeColor(_:)))
+        strokeColorButton.selectItem(at: 0)
     }
 
     private func makeColorMenu(options: [ColorOption], selector: Selector) -> NSMenu {
@@ -265,13 +266,12 @@ final class CaptureHUDView: NSView {
     @objc
     private func selectStrokeColor(_ sender: NSMenuItem) {
         let option = strokeColorOptions[sender.tag]
-        selectColorOption(option, on: strokeColorButton)
+        selectColorOption(option, tag: sender.tag, on: strokeColorButton)
         onStrokeColorChange(option.color)
     }
 
-    private func selectColorOption(_ option: ColorOption, on button: NSPopUpButton) {
-        button.image = option.color.quickEyeMenuSwatchImage
-        button.title = ""
+    private func selectColorOption(_ option: ColorOption, tag: Int, on button: NSPopUpButton) {
+        button.selectItem(at: tag)
         button.toolTip = "\(option.name) stroke color"
     }
 
@@ -292,9 +292,8 @@ final class CaptureHUDView: NSView {
     }
 
     private func makeMenuButton(symbolName: String, accessibilityLabel: String) -> NSPopUpButton {
-        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
         button.bezelStyle = .rounded
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityLabel)
         button.imagePosition = .imageOnly
         button.contentTintColor = .secondaryLabelColor
         button.title = ""

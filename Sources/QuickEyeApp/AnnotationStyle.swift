@@ -76,7 +76,15 @@ struct AnnotationSnapshot {
     var cropRect: CGRect?
 }
 
-typealias AnnotationHistoryState = AnnotationSnapshot
+struct AnnotationSessionState {
+    var snapshot: AnnotationSnapshot
+    var undoStack: [AnnotationSnapshot]
+    var redoStack: [AnnotationSnapshot]
+    var toolMode: ToolMode
+    var annotationStyle: AnnotationStyle
+}
+
+typealias AnnotationHistoryState = AnnotationSessionState
 
 struct CaptureHistoryItem {
     let id: UUID

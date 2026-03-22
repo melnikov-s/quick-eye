@@ -68,8 +68,12 @@ final class AnnotationCanvasView: NSView {
         wantsLayer = true
 
         if let initialState {
-            annotations = initialState.annotations
-            cropRect = initialState.cropRect
+            annotations = initialState.snapshot.annotations
+            cropRect = initialState.snapshot.cropRect
+            undoStack = initialState.undoStack
+            redoStack = initialState.redoStack
+            toolMode = initialState.toolMode
+            annotationStyle = initialState.annotationStyle
         }
     }
 
@@ -733,7 +737,7 @@ final class AnnotationCanvasView: NSView {
     private func historyPayloadForPersistence() -> AnnotationHistoryPayload? {
         guard !annotations.isEmpty || cropRect != nil else { return nil }
 
-        let state = AnnotationHistoryState(annotations: annotations, cropRect: cropRect)
+        let state = currentSessionState()
         let previewBase = rasterizedAnnotatedImage()
         let previewImage: NSImage
         if let cropRect {
@@ -743,6 +747,16 @@ final class AnnotationCanvasView: NSView {
         }
 
         return AnnotationHistoryPayload(state: state, previewImage: previewImage)
+    }
+
+    private func currentSessionState() -> AnnotationHistoryState {
+        AnnotationHistoryState(
+            snapshot: currentSnapshot(),
+            undoStack: undoStack,
+            redoStack: redoStack,
+            toolMode: toolMode,
+            annotationStyle: annotationStyle
+        )
     }
 }
 
