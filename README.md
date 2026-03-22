@@ -1,42 +1,116 @@
 # Quick Eye
 
-Quick Eye is a macOS-first screenshot annotation tool built for fast UI feedback loops with LLM agents.
+Quick Eye is a macOS-first screenshot annotation tool built for one job: giving LLMs visual context as quickly as possible.
 
-## Why native Swift instead of Tauri?
+This is not a general-purpose screenshot utility. It is not trying to be the best tool for sharing screenshots with coworkers, making polished presentations, or replacing a full image editor. It exists to make the "take screenshot -> mark up what matters -> paste into an agent" workflow as fast and frictionless as possible.
 
-This app's value lives in system-level behavior:
+## Why This Exists
 
-- A global hotkey that works even when the app is in the background.
-- Fast screen capture with macOS Screen Recording permissions.
-- A fullscreen overlay window for immediate annotation.
-- Copying the finished image straight to the clipboard.
+If you are working with an LLM on UI, layout, styling, or product changes, visual context matters. A lot.
 
-Those workflows are much more direct in AppKit than in a webview shell. Tauri could still work later if we want a cross-platform shell, but a native macOS MVP is the fastest path to the "press hotkey, mark it up, paste it" experience.
+You often want to say things like:
 
-## MVP flow
+- "Move this button down."
+- "Increase the spacing here."
+- "Remove this element."
+- "Use this style over there."
+- "This section is broken."
+
+You can already do that with the default screenshot tools on macOS. But the workflow is slower than it needs to be:
+
+- take a screenshot
+- open the editor
+- pick an arrow tool
+- draw it
+- add text manually
+- copy the result
+- paste it into the LLM
+
+That general-purpose flow works, but it is not optimized for agent handoff.
+
+Quick Eye is optimized for a narrower, more specific workflow:
+
+- capture fast
+- annotate fast
+- keep only the context that matters
+- copy immediately
+- paste directly into an LLM
+
+That is the whole point of the project.
+
+## Design Principle
+
+Quick Eye is a small productivity tool. It is not revolutionary. The value is not novelty; the value is speed.
+
+The guiding principle is:
+
+> provide useful context to the LLM as quickly as possible
+
+Everything in the app should support that outcome. If a feature does not help you communicate visual intent faster, it probably does not belong here.
+
+## What It Optimizes For
+
+Quick Eye is specifically optimized for screenshot-to-agent workflows:
+
+- fast global capture from anywhere
+- immediate annotation on top of the screenshot
+- quick arrows, shapes, and notes
+- copy-ready output with minimal ceremony
+- auto-crop to reduce irrelevant visual context
+- smaller, more targeted images that are better suited for LLM handoff
+
+That last point matters. Often you do not need to send a full screen to an LLM. You only need the region that contains the issue, the note, and enough surrounding context to understand the request. Quick Eye tries to make that the default path when it helps.
+
+## Current Features
+
+- Menu bar app for fast access
+- Global hotkey capture on macOS
+- Fullscreen annotation overlay
+- Arrow, box, circle, and freeform annotations
+- Inline text entry for notes
+- Stroke color picker for markup visibility
+- Auto-crop export designed to keep relevant context while trimming noise
+- Manual crop mode
+- Undo and redo
+- Select, move, and delete individual annotations
+- History of the 10 most recent annotated captures
+- Session restore from history, including undo/redo state
+- Clipboard-first export so the result is ready to paste into an LLM immediately
+
+## Typical Workflow
 
 1. Launch the app.
 2. Press `Control + Option + Command + 4`.
-3. Quick Eye captures the display under your cursor.
-4. Drag to draw an arrow.
-5. Type a note in the popup and press `Add`.
-6. Use the HUD to switch tools, open the stroke-color dropdown, crop manually, or undo and redo changes.
-7. Press `Done` to copy the full result, or the auto-crop finish button to copy a padded crop around your annotations.
-8. The annotated screenshot is copied to your clipboard, ready to paste into ChatGPT, Codex, Slack, or anywhere else.
+3. Capture the current screen.
+4. Annotate the problem or desired change.
+5. Add text that explains the request.
+6. Press `Enter` to copy normally, or `Shift+Enter` to auto-crop and copy.
+7. Paste the result into ChatGPT, Codex, or another agent.
 
-## Current implementation
+## Why It Is Different From a General Screenshot Tool
 
-- Menu bar app with `Capture Screen` and `Quit`.
-- Global hotkey registration through Carbon.
-- Display capture via Core Graphics.
-- Fullscreen overlay annotation surface.
-- Arrow, box, circle, and freeform annotations with inline text prompts.
-- A visual dropdown color picker for annotation stroke styling.
-- A separate auto-crop export action that trims to your annotated area with padding.
-- Crop mode for exporting only the relevant area.
-- In-app history for the 10 most recent annotated captures.
-- Undo and redo for annotation and crop changes.
-- Clipboard export on completion.
+A general screenshot tool has to optimize for many use cases:
+
+- casual sharing
+- documentation
+- presentations
+- bug reports
+- team communication
+- archival screenshots
+
+Quick Eye does not.
+
+Quick Eye is purpose-built around one use case:
+
+- communicate visual intent to an LLM with the least possible friction
+
+Because it has that narrower goal, it can optimize around behaviors that matter more in agent workflows than in general screenshot tools:
+
+- fewer steps
+- quicker markup
+- faster note entry
+- export paths that prioritize relevance over completeness
+- history that lets you reopen and continue an unfinished visual explanation
 
 ## Running
 
@@ -46,10 +120,8 @@ swift run
 
 The first capture will likely trigger macOS Screen Recording permission prompts. If capture fails, enable access for your terminal or the final app inside System Settings -> Privacy & Security -> Screen Recording.
 
-## Next steps
+## Status
 
-- Persist a user-configurable hotkey.
-- Add rectangle highlights and freehand sketching.
-- Support multi-monitor composite capture.
-- Package as a proper `.app` bundle with app icon and launch-at-login behavior.
-- Add direct paste/upload integrations for your favorite agent tools.
+Quick Eye is a practical productivity tool for a very specific workflow. That is the goal.
+
+It is meant to help you move faster when collaborating with an LLM, not to become a full creative editing suite.
