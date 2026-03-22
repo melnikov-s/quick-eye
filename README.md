@@ -153,6 +153,38 @@ swift run
 
 The first capture will likely trigger macOS Screen Recording permission prompts. If capture fails, enable access for your terminal or the final app inside System Settings -> Privacy & Security -> Screen Recording.
 
+## Building a Normal macOS App
+
+Quick Eye can now be packaged as a real `.app` bundle instead of only running from `swift run`.
+
+Build the app bundle:
+
+```bash
+./scripts/build-app.sh
+```
+
+That creates:
+
+```bash
+dist/QuickEye.app
+```
+
+Install it into your user Applications folder:
+
+```bash
+./scripts/install-app.sh
+```
+
+Install it into `/Applications` instead:
+
+```bash
+./scripts/install-app.sh --system
+```
+
+After installation, you can launch `Quick Eye.app` like a normal macOS app from Finder, Spotlight, or Launchpad.
+
+If macOS blocks the app the first time, open it once from Finder and approve it. After that, grant Screen Recording access to `Quick Eye.app` in System Settings -> Privacy & Security -> Screen Recording.
+
 ## Status
 
 Quick Eye is a practical productivity tool for a very specific workflow. That is the goal.
