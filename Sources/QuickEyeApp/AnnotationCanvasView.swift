@@ -22,6 +22,16 @@ final class AnnotationCanvasView: NSView {
         let attributedText: NSAttributedString
     }
 
+    private enum AnnotationElement: Equatable {
+        case shape
+        case label
+    }
+
+    private struct SelectionTarget: Equatable {
+        let annotationID: UUID
+        let element: AnnotationElement
+    }
+
     private let screenshot: NSImage
     private let defaultExportRect: CGRect
     private let onComplete: (NSImage, AnnotationHistoryPayload?) -> Void
@@ -35,10 +45,11 @@ final class AnnotationCanvasView: NSView {
     private var freeformPoints: [CGPoint] = []
     private var toolMode: ToolMode = .arrow
     private var annotationStyle: AnnotationStyle = .default
+    private var autoAttachLabel = true
     private var isAwaitingManualCrop = false
     private var isGeneratingTextPrompt = false
-    private var selectedAnnotationID: UUID?
-    private var movingAnnotationID: UUID?
+    private var selectedTarget: SelectionTarget?
+    private var movingTarget: SelectionTarget?
     private var moveStartPoint: CGPoint?
     private var moveOriginalAnnotation: CanvasAnnotation?
     private var hasRecordedMoveSnapshot = false
@@ -75,6 +86,9 @@ final class AnnotationCanvasView: NSView {
             onStrokeColorChange: { [weak self] color in
                 self?.annotationStyle.strokeColor = color
                 self?.needsDisplay = true
+            },
+            onAutoLabelChange: { [weak self] isEnabled in
+                self?.autoAttachLabel = isEnabled
             }
         )
         return view
@@ -105,6 +119,7 @@ final class AnnotationCanvasView: NSView {
             redoStack = initialState.redoStack
             toolMode = initialState.toolMode
             annotationStyle = initialState.annotationStyle
+            autoAttachLabel = initialState.autoAttachLabel
         }
     }
 
@@ -167,7 +182,7 @@ final class AnnotationCanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
 
         if isAwaitingManualCrop {
-            selectedAnnotationID = nil
+            selectedTarget = nil
             resetDragState()
             dragStartPoint = point
             dragCurrentPoint = point
@@ -175,9 +190,10 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
-        if let hitAnnotation = annotation(at: point) {
-            selectedAnnotationID = hitAnnotation.id
-            if event.clickCount >= 2 {
+        if let hitTarget = selectionTarget(at: point),
+           let hitAnnotation = annotation(withID: hitTarget.annotationID) {
+            selectedTarget = hitTarget
+            if event.clickCount >= 2, hitTarget.element == .label {
                 presentEditor(
                     for: hitAnnotation,
                     initialText: hitAnnotation.text,
@@ -189,7 +205,7 @@ final class AnnotationCanvasView: NSView {
                 needsDisplay = true
                 return
             }
-            movingAnnotationID = hitAnnotation.id
+            movingTarget = hitTarget
             moveStartPoint = point
             moveOriginalAnnotation = hitAnnotation
             hasRecordedMoveSnapshot = false
@@ -197,7 +213,7 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
-        selectedAnnotationID = nil
+        selectedTarget = nil
         dragStartPoint = point
         dragCurrentPoint = point
 
@@ -219,16 +235,20 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
-        if let movingAnnotationID, let moveStartPoint, let moveOriginalAnnotation {
+        if let movingTarget, let moveStartPoint, let moveOriginalAnnotation {
             let delta = point - moveStartPoint
             if !hasRecordedMoveSnapshot, abs(delta.width) + abs(delta.height) > 2 {
                 registerSnapshot()
                 hasRecordedMoveSnapshot = true
             }
 
-            if let index = annotations.firstIndex(where: { $0.id == movingAnnotationID }) {
-                annotations[index] = translatedAnnotation(moveOriginalAnnotation, by: delta)
-                selectedAnnotationID = movingAnnotationID
+            if let index = annotationIndex(for: movingTarget.annotationID) {
+                annotations[index] = translatedAnnotation(
+                    moveOriginalAnnotation,
+                    moving: movingTarget.element,
+                    by: delta
+                )
+                selectedTarget = movingTarget
                 refreshHUDState()
                 needsDisplay = true
             }
@@ -253,8 +273,8 @@ final class AnnotationCanvasView: NSView {
             return
         }
 
-        if movingAnnotationID != nil {
-            movingAnnotationID = nil
+        if movingTarget != nil {
+            movingTarget = nil
             moveStartPoint = nil
             moveOriginalAnnotation = nil
             hasRecordedMoveSnapshot = false
@@ -272,15 +292,22 @@ final class AnnotationCanvasView: NSView {
 
         resetDragState()
 
-        pendingAnnotation = annotation
-        presentEditor(
-            for: annotation,
-            initialText: "",
-            submitButtonTitle: "Add",
-            onSubmit: { [weak self] text in
-                self?.commitPendingAnnotation(text: text)
-            }
-        )
+        if shouldPresentEditorImmediately(for: annotation) {
+            pendingAnnotation = annotation
+            presentEditor(
+                for: annotation,
+                initialText: "",
+                submitButtonTitle: "Add",
+                onSubmit: { [weak self] text in
+                    self?.commitPendingAnnotation(text: text)
+                }
+            )
+        } else {
+            registerSnapshot()
+            annotations.append(annotation)
+            selectedTarget = SelectionTarget(annotationID: annotation.id, element: .shape)
+            refreshHUDState()
+        }
 
         needsDisplay = true
     }
@@ -355,6 +382,7 @@ final class AnnotationCanvasView: NSView {
                 id: UUID(),
                 kind: .arrow(start: start, end: endPoint),
                 text: "",
+                textOrigin: nil,
                 style: annotationStyle
             )
             return annotation.kind.isSubstantial ? annotation : nil
@@ -364,6 +392,7 @@ final class AnnotationCanvasView: NSView {
                 id: UUID(),
                 kind: .rectangle(rect),
                 text: "",
+                textOrigin: nil,
                 style: annotationStyle
             )
             return annotation.kind.isSubstantial ? annotation : nil
@@ -373,6 +402,7 @@ final class AnnotationCanvasView: NSView {
                 id: UUID(),
                 kind: .ellipse(rect),
                 text: "",
+                textOrigin: nil,
                 style: annotationStyle
             )
             return annotation.kind.isSubstantial ? annotation : nil
@@ -385,9 +415,18 @@ final class AnnotationCanvasView: NSView {
                 id: UUID(),
                 kind: .freeform(points),
                 text: "",
+                textOrigin: nil,
                 style: annotationStyle
             )
             return annotation.kind.isSubstantial ? annotation : nil
+        case .label:
+            return CanvasAnnotation(
+                id: UUID(),
+                kind: .label(endPoint),
+                text: "",
+                textOrigin: nil,
+                style: annotationStyle
+            )
         }
     }
 
@@ -409,13 +448,14 @@ final class AnnotationCanvasView: NSView {
         )
 
         let desiredSize = CGSize(width: 320, height: 110)
-        let origin = clampedEditorOrigin(near: annotation.textAnchor, size: desiredSize)
+        let editorAnchor = editorAnchorPoint(for: annotation)
+        let origin = clampedEditorOrigin(near: editorAnchor, size: desiredSize)
         editor.frame = CGRect(origin: origin, size: desiredSize)
         editor.onPreferredHeightChange = { [weak self, weak editor] (newHeight: CGFloat) in
             guard let self, let editor else { return }
 
             let newSize = CGSize(width: editor.frame.width, height: newHeight)
-            let newOrigin = self.clampedEditorOrigin(near: annotation.textAnchor, size: newSize)
+            let newOrigin = self.clampedEditorOrigin(near: editorAnchor, size: newSize)
             editor.frame = CGRect(origin: newOrigin, size: newSize)
         }
 
@@ -426,10 +466,18 @@ final class AnnotationCanvasView: NSView {
 
     private func commitPendingAnnotation(text: String) {
         guard var pendingAnnotation else { return }
+        if text.isEmpty, case .label = pendingAnnotation.kind {
+            discardPendingAnnotation()
+            return
+        }
         registerSnapshot()
         pendingAnnotation.text = text
+        pendingAnnotation.textOrigin = text.isEmpty ? nil : initialTextOrigin(for: pendingAnnotation, text: text)
         annotations.append(pendingAnnotation)
-        selectedAnnotationID = pendingAnnotation.id
+        selectedTarget = SelectionTarget(
+            annotationID: pendingAnnotation.id,
+            element: selectionElement(for: pendingAnnotation)
+        )
         self.pendingAnnotation = nil
         removeEditor()
         refreshHUDState()
@@ -437,10 +485,21 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func updateAnnotationText(id: UUID, text: String) {
-        guard let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = annotationIndex(for: id) else { return }
         registerSnapshot()
         annotations[index].text = text
-        selectedAnnotationID = id
+        if text.isEmpty {
+            if case .label = annotations[index].kind {
+                annotations.remove(at: index)
+                selectedTarget = nil
+            } else {
+                annotations[index].textOrigin = nil
+                selectedTarget = SelectionTarget(annotationID: id, element: .shape)
+            }
+        } else {
+            annotations[index].textOrigin = annotations[index].textOrigin ?? initialTextOrigin(for: annotations[index], text: text)
+            selectedTarget = SelectionTarget(annotationID: id, element: .label)
+        }
         pendingAnnotation = nil
         removeEditor()
         refreshHUDState()
@@ -452,6 +511,24 @@ final class AnnotationCanvasView: NSView {
         removeEditor()
         refreshHUDState()
         needsDisplay = true
+    }
+
+    private func shouldPresentEditorImmediately(for annotation: CanvasAnnotation) -> Bool {
+        switch annotation.kind {
+        case .label:
+            return true
+        default:
+            return autoAttachLabel
+        }
+    }
+
+    private func selectionElement(for annotation: CanvasAnnotation) -> AnnotationElement {
+        switch annotation.kind {
+        case .label:
+            return .label
+        default:
+            return annotation.text.isEmpty ? .shape : .label
+        }
     }
 
     private func removeEditor() {
@@ -473,7 +550,7 @@ final class AnnotationCanvasView: NSView {
         annotations.removeAll()
         pendingAnnotation = nil
         isAwaitingManualCrop = false
-        selectedAnnotationID = nil
+        selectedTarget = nil
         undoStack.removeAll()
         redoStack.removeAll()
         resetDragState()
@@ -507,7 +584,7 @@ final class AnnotationCanvasView: NSView {
         annotations = snapshot.annotations
         pendingAnnotation = nil
         isAwaitingManualCrop = false
-        selectedAnnotationID = nil
+        selectedTarget = nil
         removeEditor()
         refreshHUDState()
         needsDisplay = true
@@ -515,6 +592,7 @@ final class AnnotationCanvasView: NSView {
 
     private func refreshHUDState() {
         hudView.setTool(toolMode)
+        hudView.setAutoLabelEnabled(autoAttachLabel)
         let statusMessage: String?
         if isGeneratingTextPrompt {
             statusMessage = "Generating text prompt..."
@@ -547,7 +625,7 @@ final class AnnotationCanvasView: NSView {
             if freeformPoints.count > 1 {
                 drawFreeform(points: freeformPoints, style: annotationStyle, isDraft: true)
             }
-        case .arrow, .rectangle, .ellipse:
+        case .arrow, .rectangle, .ellipse, .label:
             guard let draftAnnotation = draftAnnotationFromDrag() else { return }
             drawAnnotation(draftAnnotation, isDraft: true)
         }
@@ -558,11 +636,13 @@ final class AnnotationCanvasView: NSView {
 
         switch toolMode {
         case .arrow:
-            return CanvasAnnotation(id: UUID(), kind: .arrow(start: start, end: end), text: "", style: annotationStyle)
+            return CanvasAnnotation(id: UUID(), kind: .arrow(start: start, end: end), text: "", textOrigin: nil, style: annotationStyle)
         case .rectangle:
-            return CanvasAnnotation(id: UUID(), kind: .rectangle(rect(from: start, to: end)), text: "", style: annotationStyle)
+            return CanvasAnnotation(id: UUID(), kind: .rectangle(rect(from: start, to: end)), text: "", textOrigin: nil, style: annotationStyle)
         case .ellipse:
-            return CanvasAnnotation(id: UUID(), kind: .ellipse(rect(from: start, to: end)), text: "", style: annotationStyle)
+            return CanvasAnnotation(id: UUID(), kind: .ellipse(rect(from: start, to: end)), text: "", textOrigin: nil, style: annotationStyle)
+        case .label:
+            return CanvasAnnotation(id: UUID(), kind: .label(end), text: "Label", textOrigin: nil, style: annotationStyle)
         case .freeform:
             return nil
         }
@@ -587,6 +667,7 @@ final class AnnotationCanvasView: NSView {
         case let .rectangle(rect):
             drawRectangularShape(
                 rect: rect,
+                anchor: CGPoint(x: rect.maxX, y: rect.maxY),
                 text: annotation.text,
                 style: annotation.style,
                 isDraft: isDraft,
@@ -596,6 +677,7 @@ final class AnnotationCanvasView: NSView {
         case let .ellipse(rect):
             drawRectangularShape(
                 rect: rect,
+                anchor: CGPoint(x: rect.maxX, y: rect.maxY),
                 text: annotation.text,
                 style: annotation.style,
                 isDraft: isDraft,
@@ -606,15 +688,22 @@ final class AnnotationCanvasView: NSView {
             drawFreeform(points: points, style: annotation.style, isDraft: isDraft)
             if !annotation.text.isEmpty {
                 drawTextBubble(
-                    bubbleLayout ?? textBubbleLayout(text: annotation.text, near: annotation.textAnchor),
+                    bubbleLayout ?? textBubbleLayout(for: annotation),
                     anchor: annotation.textAnchor,
                     style: annotation.style
                 )
             }
+        case .label:
+            guard !annotation.text.isEmpty else { break }
+            drawTextBubble(
+                bubbleLayout ?? textBubbleLayout(for: annotation),
+                anchor: nil,
+                style: annotation.style
+            )
         }
 
-        if showsSelectionOutline, annotation.id == selectedAnnotationID {
-            drawSelectionOutline(for: annotation)
+        if showsSelectionOutline, selectedTarget?.annotationID == annotation.id {
+            drawSelectionOutline(for: annotation, target: selectedTarget)
         }
     }
 
@@ -667,6 +756,7 @@ final class AnnotationCanvasView: NSView {
 
     private func drawRectangularShape(
         rect: CGRect,
+        anchor: CGPoint,
         text: String,
         style: AnnotationStyle,
         isDraft: Bool,
@@ -681,7 +771,6 @@ final class AnnotationCanvasView: NSView {
         strokeAnnotationPath(path, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
 
         if !text.isEmpty {
-            let anchor = CGPoint(x: rect.maxX, y: rect.maxY)
             drawTextBubble(
                 textBubbleLayout ?? self.textBubbleLayout(text: text, near: anchor),
                 anchor: anchor,
@@ -703,9 +792,10 @@ final class AnnotationCanvasView: NSView {
         strokeAnnotationPath(path, color: style.strokeColor, lineWidth: isDraft ? 5 : 4)
     }
 
-    private func drawTextBubble(_ layout: TextBubbleLayout, anchor point: CGPoint, style: AnnotationStyle) {
+    private func drawTextBubble(_ layout: TextBubbleLayout, anchor point: CGPoint?, style: AnnotationStyle) {
         let rect = layout.bubbleRect
-        if let connectorPoint = closestPoint(on: rect, to: point),
+        if let point,
+           let connectorPoint = closestPoint(on: rect, to: point),
            point.distance(to: connectorPoint) > 10 {
             let connector = NSBezierPath()
             connector.move(to: point)
@@ -742,8 +832,16 @@ final class AnnotationCanvasView: NSView {
         path.stroke()
     }
 
-    private func drawSelectionOutline(for annotation: CanvasAnnotation) {
-        guard let bounds = annotationBounds(annotation), !bounds.isNull else { return }
+    private func drawSelectionOutline(for annotation: CanvasAnnotation, target: SelectionTarget?) {
+        let bounds: CGRect?
+        switch target?.element {
+        case .label:
+            bounds = textBubbleRect(for: annotation)
+        case .shape, .none:
+            bounds = shapeBounds(for: annotation.kind)
+        }
+
+        guard let bounds, !bounds.isNull else { return }
 
         let outlineRect = bounds.insetBy(dx: -8, dy: -8)
         let path = NSBezierPath(roundedRect: outlineRect, xRadius: 10, yRadius: 10)
@@ -782,7 +880,7 @@ final class AnnotationCanvasView: NSView {
         guard activeEditor == nil, !isGeneratingTextPrompt else { return }
 
         pendingAnnotation = nil
-        selectedAnnotationID = nil
+        selectedTarget = nil
         isAwaitingManualCrop = true
         resetDragState()
         refreshHUDState()
@@ -995,6 +1093,14 @@ final class AnnotationCanvasView: NSView {
         return origin
     }
 
+    private func editorAnchorPoint(for annotation: CanvasAnnotation) -> CGPoint {
+        if let bubbleRect = textBubbleRect(for: annotation) {
+            return CGPoint(x: bubbleRect.minX, y: bubbleRect.maxY)
+        }
+
+        return annotation.textOrigin ?? annotation.textAnchor
+    }
+
     private func rect(from start: CGPoint, to end: CGPoint) -> CGRect {
         CGRect(
             x: min(start.x, end.x),
@@ -1006,13 +1112,13 @@ final class AnnotationCanvasView: NSView {
 
     private func annotationBounds(_ annotation: CanvasAnnotation) -> CGRect? {
         let shapeBounds = shapeBounds(for: annotation.kind)
-        guard !shapeBounds.isNull else { return nil }
+        let bubbleBounds = textBubbleRect(for: annotation)
 
-        guard !annotation.text.isEmpty else {
-            return shapeBounds
+        if shapeBounds.isNull {
+            return bubbleBounds
         }
 
-        guard let bubbleBounds = textBubbleRect(for: annotation) else {
+        guard let bubbleBounds else {
             return shapeBounds
         }
 
@@ -1040,6 +1146,8 @@ final class AnnotationCanvasView: NSView {
             return rect.insetBy(dx: -6, dy: -6)
         case let .freeform(points):
             return points.boundingRect.insetBy(dx: -6, dy: -6)
+        case .label:
+            return .null
         }
     }
 
@@ -1048,9 +1156,19 @@ final class AnnotationCanvasView: NSView {
         return currentTextBubbleLayouts()[annotation.id]?.bubbleRect
     }
 
+    private func textBubbleLayout(for annotation: CanvasAnnotation, occupiedRects: [CGRect] = []) -> TextBubbleLayout {
+        textBubbleLayout(
+            text: annotation.text,
+            near: annotation.textAnchor,
+            preferredOrigin: annotation.textOrigin,
+            occupiedRects: occupiedRects
+        )
+    }
+
     private func textBubbleLayout(
         text: String,
         near point: CGPoint,
+        preferredOrigin: CGPoint? = nil,
         occupiedRects: [CGRect] = []
     ) -> TextBubbleLayout {
         let safeBounds = bounds.insetBy(dx: Self.textBubbleSafeInset, dy: Self.textBubbleSafeInset)
@@ -1075,6 +1193,7 @@ final class AnnotationCanvasView: NSView {
                 let layout = makeTextBubbleLayout(
                     text: text,
                     near: point,
+                    preferredOrigin: preferredOrigin,
                     safeBounds: safeBounds,
                     fontSize: fontSize,
                     maxTextWidth: textWidth,
@@ -1091,6 +1210,7 @@ final class AnnotationCanvasView: NSView {
         return fallbackLayout ?? makeTextBubbleLayout(
             text: text,
             near: point,
+            preferredOrigin: preferredOrigin,
             safeBounds: safeBounds,
             fontSize: Self.textBubbleFontSizes.last ?? 13,
             maxTextWidth: absoluteMaxTextWidth,
@@ -1101,6 +1221,7 @@ final class AnnotationCanvasView: NSView {
     private func makeTextBubbleLayout(
         text: String,
         near point: CGPoint,
+        preferredOrigin: CGPoint?,
         safeBounds: CGRect,
         fontSize: CGFloat,
         maxTextWidth: CGFloat,
@@ -1128,12 +1249,17 @@ final class AnnotationCanvasView: NSView {
             height: textSize.height + (Self.textBubbleVerticalPadding * 2)
         )
 
-        let bubbleOrigin = positionedTextBubbleOrigin(
-            near: point,
-            bubbleSize: bubbleSize,
-            safeBounds: safeBounds,
-            occupiedRects: occupiedRects
-        )
+        let bubbleOrigin: CGPoint
+        if let preferredOrigin {
+            bubbleOrigin = clampedBubbleOrigin(preferredOrigin, bubbleSize: bubbleSize, safeBounds: safeBounds)
+        } else {
+            bubbleOrigin = positionedTextBubbleOrigin(
+                near: point,
+                bubbleSize: bubbleSize,
+                safeBounds: safeBounds,
+                occupiedRects: occupiedRects
+            )
+        }
         let bubbleRect = CGRect(origin: bubbleOrigin, size: bubbleSize)
         let textRect = bubbleRect.insetBy(
             dx: Self.textBubbleHorizontalPadding,
@@ -1228,11 +1354,7 @@ final class AnnotationCanvasView: NSView {
 
         let orderedAnnotations = annotations + (pendingAnnotation.map { [$0] } ?? [])
         for annotation in orderedAnnotations where !annotation.text.isEmpty {
-            let layout = textBubbleLayout(
-                text: annotation.text,
-                near: annotation.textAnchor,
-                occupiedRects: occupiedRects
-            )
+            let layout = textBubbleLayout(for: annotation, occupiedRects: occupiedRects)
             layouts[annotation.id] = layout
             occupiedRects.append(
                 layout.bubbleRect.insetBy(
@@ -1243,6 +1365,29 @@ final class AnnotationCanvasView: NSView {
         }
 
         return layouts
+    }
+
+    private func initialTextOrigin(for annotation: CanvasAnnotation, text: String) -> CGPoint {
+        textBubbleLayout(
+            text: text,
+            near: annotation.textAnchor,
+            preferredOrigin: annotation.textOrigin,
+            occupiedRects: currentOccupiedTextRects(excluding: annotation.id)
+        ).bubbleRect.origin
+    }
+
+    private func currentOccupiedTextRects(excluding annotationID: UUID? = nil) -> [CGRect] {
+        currentTextBubbleLayouts()
+            .filter { entry in
+                guard let annotationID else { return true }
+                return entry.key != annotationID
+            }
+            .map { _, layout in
+                layout.bubbleRect.insetBy(
+                    dx: -Self.textBubbleCollisionPadding,
+                    dy: -Self.textBubbleCollisionPadding
+                )
+            }
     }
 
     private func closestPoint(on rect: CGRect, to point: CGPoint) -> CGPoint? {
@@ -1300,7 +1445,7 @@ final class AnnotationCanvasView: NSView {
         dragStartPoint = nil
         dragCurrentPoint = nil
         freeformPoints.removeAll()
-        movingAnnotationID = nil
+        movingTarget = nil
         moveStartPoint = nil
         moveOriginalAnnotation = nil
         hasRecordedMoveSnapshot = false
@@ -1315,30 +1460,38 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func deleteSelectedAnnotation() {
-        guard let selectedAnnotationID,
-              annotations.contains(where: { $0.id == selectedAnnotationID }) else { return }
+        guard let selectedTarget,
+              annotations.contains(where: { $0.id == selectedTarget.annotationID }) else { return }
 
         registerSnapshot()
-        annotations.removeAll { $0.id == selectedAnnotationID }
-        self.selectedAnnotationID = nil
+        annotations.removeAll { $0.id == selectedTarget.annotationID }
+        self.selectedTarget = nil
         refreshHUDState()
         needsDisplay = true
     }
 
-    private func annotation(at point: CGPoint) -> CanvasAnnotation? {
+    private func selectionTarget(at point: CGPoint) -> SelectionTarget? {
         for annotation in annotations.reversed() {
-            if annotationContainsPoint(annotation, point: point) {
-                return annotation
+            if let target = selectionTarget(for: annotation, at: point) {
+                return target
             }
         }
         return nil
     }
 
-    private func annotationContainsPoint(_ annotation: CanvasAnnotation, point: CGPoint) -> Bool {
+    private func selectionTarget(for annotation: CanvasAnnotation, at point: CGPoint) -> SelectionTarget? {
         if let bubbleRect = textBubbleRect(for: annotation), bubbleRect.contains(point) {
-            return true
+            return SelectionTarget(annotationID: annotation.id, element: .label)
         }
 
+        guard annotationShapeContainsPoint(annotation, point: point) else {
+            return nil
+        }
+
+        return SelectionTarget(annotationID: annotation.id, element: .shape)
+    }
+
+    private func annotationShapeContainsPoint(_ annotation: CanvasAnnotation, point: CGPoint) -> Bool {
         switch annotation.kind {
         case let .arrow(start, end):
             return distanceFromPoint(point, toSegmentStart: start, end: end) <= 18
@@ -1348,22 +1501,45 @@ final class AnnotationCanvasView: NSView {
             return rect.insetBy(dx: -12, dy: -12).contains(point)
         case let .freeform(points):
             return points.boundingRect.insetBy(dx: -12, dy: -12).contains(point)
+        case .label:
+            return false
         }
     }
 
-    private func translatedAnnotation(_ annotation: CanvasAnnotation, by delta: CGSize) -> CanvasAnnotation {
+    private func translatedAnnotation(
+        _ annotation: CanvasAnnotation,
+        moving element: AnnotationElement,
+        by delta: CGSize
+    ) -> CanvasAnnotation {
         var moved = annotation
-        switch annotation.kind {
-        case let .arrow(start, end):
-            moved.kind = .arrow(start: start + delta, end: end + delta)
-        case let .rectangle(rect):
-            moved.kind = .rectangle(rect.offsetBy(dx: delta.width, dy: delta.height))
-        case let .ellipse(rect):
-            moved.kind = .ellipse(rect.offsetBy(dx: delta.width, dy: delta.height))
-        case let .freeform(points):
-            moved.kind = .freeform(points.map { $0 + delta })
+        switch element {
+        case .shape:
+            switch annotation.kind {
+            case let .arrow(start, end):
+                moved.kind = .arrow(start: start + delta, end: end + delta)
+            case let .rectangle(rect):
+                moved.kind = .rectangle(rect.offsetBy(dx: delta.width, dy: delta.height))
+            case let .ellipse(rect):
+                moved.kind = .ellipse(rect.offsetBy(dx: delta.width, dy: delta.height))
+            case let .freeform(points):
+                moved.kind = .freeform(points.map { $0 + delta })
+            case let .label(point):
+                moved.kind = .label(point + delta)
+                moved.textOrigin = (annotation.textOrigin ?? point) + delta
+            }
+        case .label:
+            let currentOrigin = annotation.textOrigin ?? textBubbleRect(for: annotation)?.origin ?? annotation.textAnchor
+            moved.textOrigin = currentOrigin + delta
         }
         return moved
+    }
+
+    private func annotation(withID id: UUID) -> CanvasAnnotation? {
+        annotations.first(where: { $0.id == id })
+    }
+
+    private func annotationIndex(for id: UUID) -> Int? {
+        annotations.firstIndex(where: { $0.id == id })
     }
 
     private func distanceFromPoint(_ point: CGPoint, toSegmentStart start: CGPoint, end: CGPoint) -> CGFloat {
@@ -1400,7 +1576,8 @@ final class AnnotationCanvasView: NSView {
             undoStack: undoStack,
             redoStack: redoStack,
             toolMode: toolMode,
-            annotationStyle: annotationStyle
+            annotationStyle: annotationStyle,
+            autoAttachLabel: autoAttachLabel
         )
     }
 }

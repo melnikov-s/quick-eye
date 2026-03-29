@@ -1,6 +1,54 @@
 import AppKit
 
 final class CaptureHUDView: NSView {
+    private enum Layout {
+        static let width: CGFloat = 700
+        static let height: CGFloat = 126
+        static let buttonSize = CGSize(width: 34, height: 34)
+        static let edgeInset: CGFloat = 16
+    }
+
+    private final class DragSurfaceView: NSView {
+        weak var hudView: CaptureHUDView?
+
+        private var dragStartPoint: CGPoint?
+        private var dragStartFrame: CGRect?
+
+        override func mouseDown(with event: NSEvent) {
+            guard let hudView, let superview = hudView.superview else {
+                super.mouseDown(with: event)
+                return
+            }
+
+            dragStartPoint = superview.convert(event.locationInWindow, from: nil)
+            dragStartFrame = hudView.frame
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let hudView,
+                  let superview = hudView.superview,
+                  let dragStartPoint,
+                  let dragStartFrame else {
+                super.mouseDragged(with: event)
+                return
+            }
+
+            let currentPoint = superview.convert(event.locationInWindow, from: nil)
+            let delta = currentPoint - dragStartPoint
+            let unclampedOrigin = CGPoint(
+                x: dragStartFrame.minX + delta.width,
+                y: dragStartFrame.minY + delta.height
+            )
+            hudView.frame.origin = hudView.clampedOrigin(for: unclampedOrigin, in: superview.bounds)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            dragStartPoint = nil
+            dragStartFrame = nil
+            super.mouseUp(with: event)
+        }
+    }
+
     private let onDone: () -> Void
     private let onDoneAutoCrop: () -> Void
     private let onDoneManualCrop: () -> Void
@@ -10,6 +58,7 @@ final class CaptureHUDView: NSView {
     private let onRedo: () -> Void
     private let onToolChange: (ToolMode) -> Void
     private let onStrokeColorChange: (NSColor) -> Void
+    private let onAutoLabelChange: (Bool) -> Void
 
     private let strokeColorOptions: [ColorOption] = [
         ColorOption(name: "Red", color: .systemRed),
@@ -20,6 +69,13 @@ final class CaptureHUDView: NSView {
         ColorOption(name: "Pink", color: .systemPink),
         ColorOption(name: "White", color: .white),
     ]
+
+    private lazy var dragSurfaceView: DragSurfaceView = {
+        let view = DragSurfaceView(frame: .zero)
+        view.hudView = self
+        view.autoresizingMask = [.width, .height]
+        return view
+    }()
 
     private lazy var titleLabel: NSTextField = {
         let label = NSTextField(labelWithString: ToolMode.arrow.description)
@@ -48,11 +104,24 @@ final class CaptureHUDView: NSView {
         accessibilityLabel: "Freeform tool: draw around an area, then add a note",
         action: #selector(selectFreeformTool)
     )
+    private lazy var labelToolButton = makeToolButton(
+        symbolName: "text.bubble",
+        accessibilityLabel: "Label tool: click anywhere to place a standalone label",
+        action: #selector(selectLabelTool)
+    )
 
     private lazy var strokeColorButton = makeMenuButton(
         symbolName: "paintpalette",
         accessibilityLabel: "Stroke color: choose the color for arrows and shapes"
     )
+
+    private lazy var autoLabelToggle: NSButton = {
+        let button = NSButton(checkboxWithTitle: "Auto label", target: self, action: #selector(toggleAutoLabel))
+        button.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        button.state = .on
+        button.toolTip = "When enabled, drawing a shape immediately opens a label editor"
+        return button
+    }()
 
     private lazy var undoButton = makeToolButton(
         symbolName: "arrow.uturn.backward",
@@ -112,7 +181,8 @@ final class CaptureHUDView: NSView {
         onUndo: @escaping () -> Void,
         onRedo: @escaping () -> Void,
         onToolChange: @escaping (ToolMode) -> Void,
-        onStrokeColorChange: @escaping (NSColor) -> Void
+        onStrokeColorChange: @escaping (NSColor) -> Void,
+        onAutoLabelChange: @escaping (Bool) -> Void
     ) {
         self.onDone = onDone
         self.onDoneAutoCrop = onDoneAutoCrop
@@ -123,6 +193,7 @@ final class CaptureHUDView: NSView {
         self.onRedo = onRedo
         self.onToolChange = onToolChange
         self.onStrokeColorChange = onStrokeColorChange
+        self.onAutoLabelChange = onAutoLabelChange
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.94).cgColor
@@ -132,13 +203,17 @@ final class CaptureHUDView: NSView {
 
         configureMenus()
 
+        addSubview(dragSurfaceView)
+
         [
             titleLabel,
             arrowToolButton,
             rectangleToolButton,
             ellipseToolButton,
             freeformToolButton,
+            labelToolButton,
             strokeColorButton,
+            autoLabelToggle,
             undoButton,
             redoButton,
             clearButton,
@@ -150,6 +225,7 @@ final class CaptureHUDView: NSView {
         ].forEach(addSubview)
 
         setTool(.arrow)
+        setAutoLabelEnabled(true)
         selectColorOption(strokeColorOptions[0], tag: 0, on: strokeColorButton)
         onStrokeColorChange(strokeColorOptions[0].color)
     }
@@ -160,31 +236,39 @@ final class CaptureHUDView: NSView {
     }
 
     override var fittingSize: NSSize {
-        NSSize(width: 620, height: 126)
+        NSSize(width: Layout.width, height: Layout.height)
     }
 
     override func layout() {
         super.layout()
 
-        titleLabel.frame = CGRect(x: 18, y: bounds.height - 34, width: bounds.width - 70, height: 18)
-        progressIndicator.frame = CGRect(x: bounds.width - 34, y: bounds.height - 38, width: 16, height: 16)
+        dragSurfaceView.frame = bounds
 
-        let toolButtonSize = CGSize(width: 34, height: 34)
+        titleLabel.frame = CGRect(
+            x: Layout.edgeInset,
+            y: bounds.height - 34,
+            width: bounds.width - 56,
+            height: 18
+        )
+        progressIndicator.frame = CGRect(x: bounds.width - 32, y: bounds.height - 36, width: 16, height: 16)
+
         let toolY = bounds.height - 82
-        arrowToolButton.frame = CGRect(x: 18, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
-        rectangleToolButton.frame = CGRect(x: 58, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
-        ellipseToolButton.frame = CGRect(x: 98, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
-        freeformToolButton.frame = CGRect(x: 138, y: toolY, width: toolButtonSize.width, height: toolButtonSize.height)
+        arrowToolButton.frame = CGRect(x: 16, y: toolY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        rectangleToolButton.frame = CGRect(x: 56, y: toolY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        ellipseToolButton.frame = CGRect(x: 96, y: toolY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        freeformToolButton.frame = CGRect(x: 136, y: toolY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        labelToolButton.frame = CGRect(x: 176, y: toolY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        strokeColorButton.frame = CGRect(x: 224, y: toolY, width: 48, height: Layout.buttonSize.height)
+        autoLabelToggle.frame = CGRect(x: 288, y: toolY + 7, width: 120, height: 20)
 
-        strokeColorButton.frame = CGRect(x: 186, y: toolY, width: 48, height: 34)
-
-        undoButton.frame = CGRect(x: bounds.width - 330, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        redoButton.frame = CGRect(x: bounds.width - 290, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        clearButton.frame = CGRect(x: bounds.width - 210, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        doneManualCropButton.frame = CGRect(x: bounds.width - 170, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        doneAutoCropButton.frame = CGRect(x: bounds.width - 130, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        doneConvertToTextButton.frame = CGRect(x: bounds.width - 90, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
-        doneButton.frame = CGRect(x: bounds.width - 50, y: 14, width: toolButtonSize.width, height: toolButtonSize.height)
+        let actionY: CGFloat = 16
+        undoButton.frame = CGRect(x: bounds.width - 330, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        redoButton.frame = CGRect(x: bounds.width - 290, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        clearButton.frame = CGRect(x: bounds.width - 210, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        doneManualCropButton.frame = CGRect(x: bounds.width - 170, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        doneAutoCropButton.frame = CGRect(x: bounds.width - 130, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        doneConvertToTextButton.frame = CGRect(x: bounds.width - 90, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
+        doneButton.frame = CGRect(x: bounds.width - 50, y: actionY, width: Layout.buttonSize.width, height: Layout.buttonSize.height)
     }
 
     func setTool(_ tool: ToolMode) {
@@ -196,12 +280,17 @@ final class CaptureHUDView: NSView {
             (.rectangle, rectangleToolButton),
             (.ellipse, ellipseToolButton),
             (.freeform, freeformToolButton),
+            (.label, labelToolButton),
         ]
 
         for (mode, button) in buttonsByTool {
             button.isBordered = mode == tool
             button.contentTintColor = mode == tool ? .controlAccentColor : .secondaryLabelColor
         }
+    }
+
+    func setAutoLabelEnabled(_ isEnabled: Bool) {
+        autoLabelToggle.state = isEnabled ? .on : .off
     }
 
     func setUndoRedoState(canUndo: Bool, canRedo: Bool) {
@@ -290,6 +379,17 @@ final class CaptureHUDView: NSView {
         onToolChange(.freeform)
     }
 
+    @objc
+    private func selectLabelTool() {
+        setTool(.label)
+        onToolChange(.label)
+    }
+
+    @objc
+    private func toggleAutoLabel() {
+        onAutoLabelChange(autoLabelToggle.state == .on)
+    }
+
     private func configureMenus() {
         strokeColorButton.menu = makeColorMenu(options: strokeColorOptions, selector: #selector(selectStrokeColor(_:)))
         strokeColorButton.selectItem(at: 0)
@@ -329,21 +429,25 @@ final class CaptureHUDView: NSView {
     }
 
     private func updateBusyState() {
+        let toolButtons: [NSControl] = [
+            arrowToolButton,
+            rectangleToolButton,
+            ellipseToolButton,
+            freeformToolButton,
+            labelToolButton,
+            strokeColorButton,
+            autoLabelToggle,
+            undoButton,
+            redoButton,
+            clearButton,
+            doneManualCropButton,
+            doneAutoCropButton,
+            doneConvertToTextButton,
+            doneButton,
+        ]
+
         if isBusy {
-            [
-                arrowToolButton,
-                rectangleToolButton,
-                ellipseToolButton,
-                freeformToolButton,
-                strokeColorButton,
-                undoButton,
-                redoButton,
-                clearButton,
-                doneManualCropButton,
-                doneAutoCropButton,
-                doneConvertToTextButton,
-                doneButton,
-            ].forEach {
+            toolButtons.forEach {
                 $0.isEnabled = false
                 $0.alphaValue = 0.5
             }
@@ -355,7 +459,9 @@ final class CaptureHUDView: NSView {
         rectangleToolButton.isEnabled = true
         ellipseToolButton.isEnabled = true
         freeformToolButton.isEnabled = true
+        labelToolButton.isEnabled = true
         strokeColorButton.isEnabled = true
+        autoLabelToggle.isEnabled = true
         undoButton.isEnabled = canUndo
         redoButton.isEnabled = canRedo
         clearButton.isEnabled = true
@@ -364,9 +470,9 @@ final class CaptureHUDView: NSView {
         doneConvertToTextButton.isEnabled = true
         doneButton.isEnabled = true
 
-        let toolButtons: [NSButton] = [arrowToolButton, rectangleToolButton, ellipseToolButton, freeformToolButton]
-        toolButtons.forEach { $0.alphaValue = 1 }
+        [arrowToolButton, rectangleToolButton, ellipseToolButton, freeformToolButton, labelToolButton].forEach { $0.alphaValue = 1 }
         strokeColorButton.alphaValue = 1
+        autoLabelToggle.alphaValue = 1
         clearButton.alphaValue = 1
         doneManualCropButton.alphaValue = 1
         doneAutoCropButton.alphaValue = 1
@@ -402,4 +508,13 @@ final class CaptureHUDView: NSView {
         button.toolTip = accessibilityLabel
         return button
     }
+
+    private func clampedOrigin(for origin: CGPoint, in bounds: CGRect) -> CGPoint {
+        let inset: CGFloat = 12
+        return CGPoint(
+            x: min(max(origin.x, bounds.minX + inset), bounds.maxX - frame.width - inset),
+            y: min(max(origin.y, bounds.minY + inset), bounds.maxY - frame.height - inset)
+        )
+    }
+
 }

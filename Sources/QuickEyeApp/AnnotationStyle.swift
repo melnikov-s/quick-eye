@@ -13,6 +13,7 @@ enum ToolMode: CaseIterable {
     case rectangle
     case ellipse
     case freeform
+    case label
 
     var description: String {
         switch self {
@@ -24,6 +25,8 @@ enum ToolMode: CaseIterable {
             return "Circle mode: drag to surround a region, then add a note."
         case .freeform:
             return "Freeform mode: draw around the area, then add a note."
+        case .label:
+            return "Label mode: click anywhere to place a standalone note."
         }
     }
 }
@@ -32,6 +35,7 @@ struct CanvasAnnotation {
     let id: UUID
     var kind: AnnotationKind
     var text: String
+    var textOrigin: CGPoint?
     var style: AnnotationStyle
 
     var textAnchor: CGPoint {
@@ -44,6 +48,7 @@ enum AnnotationKind {
     case rectangle(CGRect)
     case ellipse(CGRect)
     case freeform([CGPoint])
+    case label(CGPoint)
 
     var textAnchor: CGPoint {
         switch self {
@@ -54,6 +59,8 @@ enum AnnotationKind {
         case let .freeform(points):
             let bounds = points.boundingRect
             return CGPoint(x: bounds.maxX, y: bounds.maxY)
+        case let .label(point):
+            return point
         }
     }
 
@@ -65,6 +72,8 @@ enum AnnotationKind {
             return rect.width > 10 && rect.height > 10
         case let .freeform(points):
             return points.count > 2 && points.pathLength > 24
+        case .label:
+            return true
         }
     }
 }
@@ -79,6 +88,7 @@ struct AnnotationSessionState {
     var redoStack: [AnnotationSnapshot]
     var toolMode: ToolMode
     var annotationStyle: AnnotationStyle
+    var autoAttachLabel: Bool
 }
 
 typealias AnnotationHistoryState = AnnotationSessionState
